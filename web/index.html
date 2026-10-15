@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LocalSH Weave Lab</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 28 10v12L16 29 4 22V10z' fill='%23f6f6f5' stroke='%232973c7' stroke-width='2.5' stroke-linejoin='round'/%3E%3Cpath d='M16 3v26M4 10l24 12M28 10 4 22' stroke='%232973c7' stroke-width='1.6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js",
+               "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <header id="statusbar">
+    <span class="brand">LocalSH</span>
+    <span id="st-mesh" class="st">no surface</span>
+    <span id="st-run" class="st"></span>
+    <span id="st-lat" class="st"></span>
+    <span id="st-msg" class="st dim"></span>
+    <span id="st-backend" class="st pill">…</span>
+  </header>
+
+  <aside id="panel">
+    <!-- solver progress: always visible, not foldable -->
+    <div id="growth">
+      <div id="growth-legend" class="mono"><span class="dim">growth · peaks · interior · singular against the step</span></div>
+      <canvas id="chart" width="360" height="118" title="click or drag to scrub the shown step · solid = tracked, dashed = predicted (ideal front, flat-lattice speed)"></canvas>
+      <div id="growth-text" class="readout">no lattice yet</div>
+    </div>
+
+    <div id="sections">
+    <details class="sec" id="sec-surface" open>
+      <summary><span class="chev"></span><h2>1 Surface</h2><span class="sum" id="sum-surface"></span></summary>
+      <div class="body">
+      <div class="row">
+        <label for="sel-zoo">zoo</label>
+        <select id="sel-zoo"></select>
+      </div>
+      <div class="row">
+        <label class="btn file"><input type="file" id="file-stl" accept=".stl,.obj" hidden>Open STL…</label>
+        <span class="hint">or drop an .stl on the view</span>
+      </div>
+      <div class="readout" id="ro-carrier">—</div>
+      <div class="readout warn" id="ro-notes" hidden></div>
+      </div>
+    </details>
+
+    <details class="sec" id="sec-density" open>
+      <summary><span class="chev"></span><h2>2 Density</h2><span class="sum" id="sum-density"></span></summary>
+      <div class="body">
+      <div class="row slider">
+        <label for="sl-a">lattice edge a <button class="info" type="button" title="a = lattice edge in model units (distance between neighbouring sites). Sites = lattice vertices ≈ area / (√3⁄2 · a²); crossings ≈ 3 × sites; strand pitch = √3⁄2 · a; lath width = slider × a. Without the carrier correction below SH23 realises ≈ 0.975 a at 8 edges per a.">i</button></label>
+        <input type="range" id="sl-a" min="0" max="1000" value="500">
+        <input type="number" id="nb-a" step="0.01" class="num">
+      </div>
+      <div class="row">
+        <label for="nb-sites">≈ sites</label>
+        <input type="number" id="nb-sites" step="1" min="4" class="num">
+        <span class="readout inline" id="ro-q0">q0 = —</span>
+      </div>
+      <div class="row">
+        <label for="cb-disp">correct q0 for the carrier <button class="info" type="button" title="The cotan Laplacian on a mesh of edge h has the symbol λ(k) ≈ k²(1 − c k²h²) (c ≈ 1/24 measured on the remeshed carriers, 1/16 on an equilateral grid), so the SH operator selects k = q0(1 + c(q0h)²/2): an edge of 0.981 a at 8 carrier edges per a, 0.966 a at 6. With the correction the operator uses λ(q0) in place of q0² and the realised edge is a (±0.5 %). The continuum SH23 ground state itself sits at q0 within +0.3 % (experiments/calibrate.js).">i</button></label>
+        <input type="checkbox" id="cb-disp" checked>
+        <span class="readout inline" id="ro-disp">—</span>
+      </div>
+      <svg id="dens-svg" class="diagram" viewBox="0 0 372 156" role="img" aria-label="lattice edge, strand pitch and carrier resolution at true ratio"></svg>
+      <div class="row">
+        <label>carrier <button class="info" type="button" title="The carrier must resolve a with 6–14 edges per a (the operator is fourth order). Denser lattices need a finer carrier: ×2 / ×4 / ×8 subdivide the exported carrier in the browser (same surface, 4× / 16× / 64× the vertices).">i</button></label>
+        <div class="chips inline" id="refine-chips">
+          <button class="chip on" data-level="0">×1</button><button class="chip" data-level="1">×2</button><button class="chip" data-level="2">×4</button><button class="chip" data-level="3">×8</button>
+        </div>
+        <span class="readout inline" id="ro-refine">—</span>
+      </div>
+      <div class="row">
+        <label>on the model</label>
+        <div class="chips inline" id="dens-chips">
+          <button class="chip" data-layer="wire" title="the intrinsic Delaunay triangulation the solver uses; flipped edges (geodesics across faces) in the accent colour">intrinsic mesh</button>
+          <button class="chip" data-layer="probe" title="the seed's first ring at the centre: n sites at lattice distance a, the spokes, and the circle ρ = a — count the carrier edges along a spoke">scale a at the centre</button>
+        </div>
+      </div>
+      <div class="readout" id="ro-mesh" hidden></div>
+      </div>
+    </details>
+
+    <details class="sec" id="sec-sing" open>
+      <summary><span class="chev"></span><h2>3 Singularity</h2><span class="sum" id="sum-sing"></span></summary>
+      <div class="body">
+      <svg id="charge-svg" class="diagram" viewBox="0 0 372 86" role="img" aria-label="detected curvature against the valence of the centre"></svg>
+      <div class="readout" id="ro-omega">—</div>
+      <div class="row slider">
+        <label for="sl-valence">valence at the centre</label>
+        <input type="range" id="sl-valence" min="3" max="9" value="6">
+        <output id="out-valence" class="mono">6</output>
+      </div>
+      <div class="readout" id="ro-centre">—</div>
+      <div class="row">
+        <button id="btn-detected" class="btn">Use detected</button>
+        <button id="btn-pick" class="btn">Pick centre on surface…</button>
+      </div>
+      <p class="hint">or Shift-click the surface · a plain click selects a lath or a vertex</p>
+      <div class="row">
+        <label for="sel-seed">seed</label>
+        <select id="sel-seed"><option value="wave">3 waves in the folded chart</option><option value="spots">Gaussian spots</option></select>
+      </div>
+      <div class="row slider">
+        <label for="sl-seedr">seed radius [a]</label>
+        <input type="range" id="sl-seedr" min="1" max="4" step="0.1" value="2">
+        <output id="out-seedr" class="mono">2.0</output>
+      </div>
+      <div class="readout" id="ro-seedr">—</div>
+      <div class="row slider">
+        <label for="sl-seedphi">seed rotation [°]</label>
+        <input type="range" id="sl-seedphi" min="0" max="60" step="1" value="0">
+        <output id="out-seedphi" class="mono">0</output>
+      </div>
+      </div>
+    </details>
+
+    <details class="sec" id="sec-solve" open>
+      <summary><span class="chev"></span><h2>4 Solve</h2><span class="sum" id="sum-solve"></span></summary>
+      <div class="body">
+      <div class="row slider">
+        <label for="sl-steps">steps</label>
+        <input type="range" id="sl-steps" min="0" max="20000" step="10" value="3000">
+        <output id="out-steps" class="mono">3000</output>
+      </div>
+      <div class="readout" id="ro-steps">0 computed</div>
+      <div class="row buttons">
+        <button id="btn-run" class="btn primary">Run</button>
+        <button id="btn-plus" class="btn">+500</button>
+        <button id="btn-reseed" class="btn">Re-seed</button>
+        <button id="btn-export" class="btn">Export lattice</button>
+      </div>
+      <div class="subhead">pattern parameters <button class="info" type="button" title="u_t = r u − (1 + Δ/q0²)² u + b u² − u³. r &lt; 0 keeps u = 0 stable, so the lattice only grows from the seed as a front; b (the quadratic term) makes hexagons (spots) win and lets them live at more negative r. The map shows the front speed measured on a flat domain with the solver's own scheme: drag the dot to set r and b.">i</button></div>
+      <canvas id="phase" class="pchart" width="372" height="190" title="drag the dot to set r and b (the diamond: anneal stage)"></canvas>
+      <div class="row slider"><label for="sl-r">r</label><input type="range" id="sl-r" min="-0.5" max="0.1" step="0.005" value="-0.08"><output id="out-r" class="mono">-0.080</output></div>
+      <div class="row slider"><label for="sl-b">b (quadratic)</label><input type="range" id="sl-b" min="0.5" max="2" step="0.01" value="1.2"><output id="out-b" class="mono">1.20</output></div>
+      <div class="readout" id="ro-front">—</div>
+      <div class="row slider"><label for="sl-dt">dt <button class="info" type="button" title="Time per step. The linear part is implicit, so any dt is stable; the explicit u² and u³ terms cost accuracy: the front is 1 % slow at dt = 0.1, 3 % at 0.2, 7 % at 0.5 (flat test). Larger dt reaches the same physical time in fewer steps; on the GPU the fixed PCG iterations are the other limit.">i</button></label><input type="range" id="sl-dt" min="0.02" max="0.3" step="0.01" value="0.1"><output id="out-dt" class="mono">0.10</output></div>
+      <canvas id="dtchart" class="pchart" width="372" height="78" title="steps to cover the surface and front-speed error against dt"></canvas>
+      <div class="row">
+        <label for="nb-max">max steps</label><input type="number" id="nb-max" class="num" min="500" step="500" value="20000">
+        <label for="nb-spf">per frame</label><input type="number" id="nb-spf" class="num" min="1" max="200" value="25">
+      </div>
+      <div class="row">
+        <label for="nb-cg">CG iterations</label><input type="number" id="nb-cg" class="num" min="4" max="60" value="12" title="auto: 12 at 9 carrier edges per a, scaled with (edges per a)²; type a value to override">
+        <span class="readout inline" id="ro-cg">—</span>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="ck-anneal"> anneal after growth</label>
+        <label for="nb-r2">r₂</label><input type="number" id="nb-r2" class="num" step="0.005" value="-0.027">
+        <label for="nb-b2">b₂</label><input type="number" id="nb-b2" class="num" step="0.01" value="0.69">
+      </div>
+      <div class="row">
+        <label for="sel-anneal-when">switch</label>
+        <select id="sel-anneal-when"><option value="auto">when the front stops (peaks constant over 3 read-outs)</option><option value="step">at step</option></select>
+        <input type="number" id="nb-anneal-step" class="num" step="100" min="100" value="5000" hidden>
+        <span class="readout inline" id="ro-anneal">off</span>
+      </div>
+      <p class="hint">Two stages: grow at (r, b), then anneal at (r₂, b₂) near the edge of the map, where dislocations are mobile (flat test: 4–8× faster annihilation) and the front 3–4× slower; it removes isolated extra 5–7 pairs, not holonomy seams.</p>
+      </div>
+    </details>
+
+    <details class="sec" id="sec-view" open>
+      <summary><span class="chev"></span><h2>5 View &amp; readouts</h2><span class="sum" id="sum-view"></span></summary>
+      <div class="body">
+      <div class="row">
+        <label>theme</label>
+        <div class="chips inline" id="theme-chips">
+          <button class="chip on" data-theme="auto">auto</button>
+          <button class="chip" data-theme="light">light</button>
+          <button class="chip" data-theme="dark">dark</button>
+        </div>
+      </div>
+      <div class="chips" id="chips">
+        <button class="chip on" data-layer="field">field</button>
+        <button class="chip" data-layer="wire" title="intrinsic Delaunay triangulation of the carrier">mesh</button>
+        <button class="chip" data-layer="probe" title="the seed's first ring: n sites at distance a">scale a</button>
+        <button class="chip on" data-layer="lattice">lattice</button>
+        <button class="chip" data-layer="peaks">peaks</button>
+        <button class="chip on" data-layer="singular">singular</button>
+        <button class="chip on" data-layer="centre">centre</button>
+        <button class="chip" data-layer="laths">laths</button>
+        <button class="chip" data-layer="orient" title="a thin arrow at each regular site along the local wave vector (30° off the lattice edges); colour = misorientation to the neighbours (grains quiet, seams bright)">orient</button>
+        <button class="chip" data-layer="strain" data-tip="tip-strain">strain</button>
+      </div>
+      <div class="row" id="row-orient" hidden>
+        <label>orient colour</label>
+        <div class="chips inline" id="orient-chips"><button class="chip on" data-mode="mis" title="mean |Δθ| to the regular neighbours (after transport over one edge): 0 inside a grain">misorientation</button><button class="chip" data-mode="angle" title="θ mod 60° against the global x axis projected on the surface (drifts on curved surfaces)">angle θ</button></div>
+        <svg id="orient-legend" class="legend" viewBox="0 0 150 22" aria-hidden="true"></svg>
+      </div>
+      <div class="row" id="row-strain" hidden>
+        <label>strain family <button class="info" type="button" data-tip="tip-strain" aria-label="what strain shows">i</button></label>
+        <div class="chips inline" id="strain-chips"><button class="chip on" data-fam="-1">all</button><button class="chip" data-fam="0">A</button><button class="chip" data-fam="1">B</button><button class="chip" data-fam="2">C</button></div>
+        <label for="nb-strain-range">± %</label><input type="number" id="nb-strain-range" class="num" min="2" max="60" step="1" value="15">
+      </div>
+      <div class="readout" id="ro-direction" hidden></div>
+      <div class="row">
+        <label>singular</label>
+        <div class="chips inline" id="valence-chips"><span class="hint">none yet</span></div>
+      </div>
+      <div class="row slider">
+        <label for="sl-lathw">lath width [a]</label>
+        <input type="range" id="sl-lathw" min="0.04" max="0.6" step="0.01" value="0.18">
+        <output id="out-lathw" class="mono">0.18</output>
+      </div>
+      <div class="row">
+        <label for="sel-lathcol">laths</label>
+        <select id="sel-lathcol"><option value="family">by family</option><option value="strand">by strand</option><option value="plain">plain</option></select>
+        <label class="check"><input type="checkbox" id="ck-overunder" checked> over / under</label>
+      </div>
+      <div class="row">
+        <label>weave side</label>
+        <div class="chips inline" id="side-chips"><button class="chip on" data-side="1">along the normals</button><button class="chip" data-side="-1">flipped</button></div>
+        <span class="hint">a funnel (the tree) has no side that is "outside" everywhere — pick the one you look at</span>
+      </div>
+      <div class="row">
+        <label for="sel-carrier">carrier shows</label>
+        <select id="sel-carrier"><option value="u">field u</option><option value="K">Gaussian curvature</option><option value="Ks">smoothed curvature</option><option value="none">plain</option></select>
+      </div>
+      <div class="row slider">
+        <label for="sl-turn">turntable [°/s]</label>
+        <input type="range" id="sl-turn" min="1" max="60" step="1" value="12">
+        <output id="out-turn" class="mono">12</output>
+      </div>
+      <p class="hint">view cube (top right): click a face, edge or corner · drag it to orbit · arrows roll the model 90° · ⌂ home · ⤢ fit · ⟳ turntable · keys H F T P</p>
+      <div class="readout" id="ro-selection">click a lath to follow its path · click a vertex to select it · Esc clears</div>
+      <div class="readout" id="ro-lattice">no lattice yet</div>
+      <div class="readout" id="ro-strands"></div>
+      </div>
+    </details>
+    </div>
+  </aside>
+
+  <main id="viewport">
+    <canvas id="gl"></canvas>
+    <div id="nav" aria-label="view navigation">
+      <button class="nb" id="nav-home" title="Home view (H)"><svg viewBox="0 0 16 16"><path d="M2.5 8.5 8 3.5l5.5 5M4 7.3V13h8V7.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+      <button class="nb arrow" id="nav-up" title="Roll the model up 90° (shows the face below)"><svg viewBox="0 0 16 16"><path d="M8 3.5 12.5 11.5h-9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <button class="nb" id="nav-turn" title="Turntable (T)"><svg viewBox="0 0 16 16"><path d="M12.3 8.6A4.4 4.4 0 1 1 11.1 5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11.4 5.2 8.3 4.6l1.7-2.3z" fill="currentColor"/></svg></button>
+      <button class="nb arrow" id="nav-left" title="Roll the model left 90° (shows the right face)"><svg viewBox="0 0 16 16"><path d="M3.5 8 11.5 3.5v9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <canvas id="navcube" width="112" height="112"></canvas>
+      <button class="nb arrow" id="nav-right" title="Roll the model right 90° (shows the left face)"><svg viewBox="0 0 16 16"><path d="M12.5 8 4.5 3.5v9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <button class="nb" id="nav-fit" title="Fit the surface in the view (F)"><svg viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+      <button class="nb arrow" id="nav-down" title="Roll the model down 90° (shows the top)"><svg viewBox="0 0 16 16"><path d="M8 12.5 3.5 4.5h9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+      <button class="nb" id="nav-proj" title="Perspective — click for orthographic (P)"><svg viewBox="0 0 16 16" class="ic-persp"><path d="M3 13 5.6 3h4.8L13 13z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg><svg viewBox="0 0 16 16" class="ic-ortho" hidden><path d="M3.5 3.5h9v9h-9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
+    </div>
+    <div id="drop" hidden>drop an .stl to load it</div>
+  </main>
+</div>
+
+<div id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><span id="modal-title">Export</span><button id="modal-close" class="btn">Close</button></div>
+    <p class="hint" id="modal-hint"></p>
+    <textarea id="modal-text" spellcheck="false"></textarea>
+    <div class="row buttons"><button id="modal-copy" class="btn primary">Copy</button><a id="modal-download" class="btn" download="lattice.obj">Download</a></div>
+  </div>
+</div>
+
+<template id="tip-strain">
+  <div class="tip-title">strain = ℓ / a − 1, per lattice edge</div>
+  <svg class="tipsvg" viewBox="0 0 340 160" width="340" height="160" aria-hidden="true">
+    <!-- one lattice triangle i j k; the lath segments inside it form the small triangular opening of the Kagome -->
+    <line class="lath fb" x1="95" y1="138.7" x2="160" y2="26"/>
+    <line class="lath fc" x1="105" y1="138.7" x2="40" y2="26"/>
+    <line class="lath fa" x1="18" y1="78" x2="182" y2="78"/>
+    <line class="lath fa thick" x1="70" y1="78" x2="130" y2="78"/>
+    <line class="edge" x1="40" y1="130" x2="160" y2="130"/>
+    <line class="edge dim" x1="40" y1="130" x2="100" y2="26"/>
+    <line class="edge dim" x1="160" y1="130" x2="100" y2="26"/>
+    <circle class="site" cx="40" cy="130" r="4.5"/><circle class="site" cx="160" cy="130" r="4.5"/><circle class="site" cx="100" cy="26" r="4.5"/>
+    <circle class="knot" cx="100" cy="130" r="3"/>
+    <text x="100" y="154" text-anchor="middle" class="fg">ℓ = edge of family A</text>
+    <text x="100" y="70" text-anchor="middle" class="ta">ℓ / 2</text>
+    <text x="108" y="20">site</text>
+    <text x="190" y="62" class="ta">the A lath runs</text>
+    <text x="190" y="75" class="ta">parallel to the edge;</text>
+    <text x="190" y="88" class="ta">its segment here</text>
+    <text x="190" y="101" class="ta">is ℓ / 2 long</text>
+    <text x="190" y="124">B and C laths cross</text>
+    <text x="190" y="137">at the edge midpoint</text>
+  </svg>
+  <p>An edge longer than a means the lath segments between crossings beside it are longer and the hexagonal openings
+    around its two sites are larger; shorter means tighter. Edges are grouped by the family of laths that run parallel to them (A / B / C).</p>
+  <div class="tip-key"><span class="lo">−<b data-tip-range>15</b> %</span><span class="bar"></span><span class="hi">+<b data-tip-range>15</b> %</span></div>
+  <p class="dim">On the zoo cones the large values sit at the 5–7 pairs and along the rim (v3Cone_sharp: regular interior −0.2 ± 4.3 %);
+    on a dome they spread over the surface (v4Cone_round ± 6 %) — how far curvature squeezes the lattice before it inserts a 5–7 pair.</p>
+</template>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

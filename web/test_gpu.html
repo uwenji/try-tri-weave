@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8"><title>gpu test</title></head><body><pre id="out"></pre>
+<script type="module">
+import { Carrier } from './js/carrier.js';
+import { CpuSolver } from './js/solver_cpu.js';
+import { GpuSolver, getDevice } from './js/solver_gpu.js';
+import { extractLattice, chargeSummary } from './js/lattice.js';
+const out = document.getElementById('out'); const log = (s) => { out.textContent += s + '\n'; console.log(s); };
+const q = new URLSearchParams(location.search); const name = q.get('c') || 'v5Cone_sharp'; const steps = +(q.get('steps') || 600); const refine = +(q.get('refine') || 0), aScale = +(q.get('ascale') || 1);
+try {
+  const man = await (await fetch('manifest.json')).json(); const e = man.find(m => m.name === name);
+  let c = await Carrier.fromURL(e.file); const a = e.a_default * aScale;
+  if (refine) { const t0r = performance.now(); c = c.refined(refine); log(`refined ×${2 ** refine}: ${c.n} v, h ${c.h.toFixed(3)} (base ${c.hBase.toFixed(3)}), flips ${c.meta.flips} [${(performance.now() - t0r).toFixed(0)} ms]`); }
+  log(`${c.name}: ${c.n} v, Ω ${(c.omega*180/Math.PI).toFixed(1)}, a = ${a.toFixed(3)} (${(a / c.h).toFixed(1)} edges per a)`);
+  const det = c.detectSingularity(a); const u0 = c.seedField(det.centre, Math.max(3, Math.min(9, det.valence)), a);
+  const dev = await getDevice(); log('device: ' + (dev ? JSON.stringify(dev.info) : 'none'));
+  const cpu = new CpuSolver(c, { a }); cpu.setInitial(u0);
+  let t0 = performance.now(); await cpu.step(steps); const tc = performance.now() - t0;
+  log(`cpu: ${steps} steps in ${tc.toFixed(0)} ms (${(steps/tc*1000).toFixed(0)} steps/s) relres ${cpu.lastRelRes.toExponential(1)}`);
+  if (dev) {
+    dev.addEventListener('uncapturederror', ev => log('GPU error: ' + ev.error.message));
+    const gpu = new GpuSolver(dev, c, { a }); gpu.setInitial(u0);
+    t0 = performance.now(); await gpu.step(steps); const tg = performance.now() - t0;
+    let md = 0, mu = 0; for (let i = 0; i < c.n; i++) { md = Math.max(md, Math.abs(gpu.u[i] - cpu.u[i])); mu = Math.max(mu, Math.abs(cpu.u[i])); }
+    log(`gpu: ${steps} steps in ${tg.toFixed(0)} ms (${(steps/tg*1000).toFixed(0)} steps/s); max |gpu−cpu| = ${md.toExponential(2)} (max |u| ${mu.toFixed(3)}); snapshots ${gpu.snapshots.length}`);
+    const cs = chargeSummary(extractLattice(c, gpu.u, a)); log('gpu lattice: ' + JSON.stringify(cs.hist) + ' Σ ' + cs.charge);
+    // batch of 20 steps timing (frame-sized)
+    t0 = performance.now(); for (let k = 0; k < 10; k++) await gpu.step(20); log(`gpu 10×20 steps: ${((performance.now()-t0)/10).toFixed(1)} ms per batch of 20`);
+  }
+  const cs = chargeSummary(extractLattice(c, cpu.u, a)); log('cpu lattice: ' + JSON.stringify(cs.hist) + ' Σ ' + cs.charge);
+  document.title = 'done';
+} catch (err) { log('ERROR ' + err.stack); document.title = 'done'; }
+</script></body></html>
