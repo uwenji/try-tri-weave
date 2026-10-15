@@ -88,6 +88,19 @@
     <details class="sec" id="sec-sing" open>
       <summary><span class="chev"></span><h2>3 Singularity</h2><span class="sum" id="sum-sing"></span></summary>
       <div class="body">
+      <div class="row">
+        <label>seed <button class="info" type="button" title="local: plant one ideal singularity at the centre and let the lattice grow from it. global: no centre — solve the globally smoothest 6-fold direction field on the whole surface (Knöppel et al. 2013; its singularities are where the curvature puts the 5s and 7s), integrate the three stripe phases along it (Knöppel et al. 2015; branch points are the dislocations the geometry forces), and start SH from that hexagonal field everywhere.">i</button></label>
+        <div class="chips inline" id="seed-mode"><button class="chip on" data-mode="local">local centre</button><button class="chip" data-mode="global">global rotation field</button></div>
+      </div>
+      <div id="global-block" hidden>
+        <div class="row">
+          <button id="btn-rosy" class="btn">Solve rotation field + seed</button>
+        </div>
+        <div class="readout" id="ro-rosy">—</div>
+        <div class="readout" id="ro-stripes">—</div>
+        <p class="hint">both solves run in a background worker on the base carrier and are lifted to the refined one (treeBig ×2: ≈ 10 s). A density change re-runs only the stripes.</p>
+      </div>
+      <div id="local-block">
       <svg id="charge-svg" class="diagram" viewBox="0 0 372 86" role="img" aria-label="detected curvature against the valence of the centre"></svg>
       <div class="readout" id="ro-omega">—</div>
       <div class="row slider">
@@ -115,6 +128,7 @@
         <label for="sl-seedphi">seed rotation [°]</label>
         <input type="range" id="sl-seedphi" min="0" max="60" step="1" value="0">
         <output id="out-seedphi" class="mono">0</output>
+      </div>
       </div>
       </div>
     </details>
@@ -186,6 +200,9 @@
         <button class="chip" data-layer="laths">laths</button>
         <button class="chip" data-layer="orient" title="a thin arrow at each regular site along the local wave vector (30° off the lattice edges); colour = misorientation to the neighbours (grains quiet, seams bright)">orient</button>
         <button class="chip" data-layer="strain" data-tip="tip-strain">strain</button>
+        <button class="chip" data-layer="rosy" title="global mode: the three lattice directions of the smoothest 6-fold field at every carrier vertex">rotation field</button>
+        <button class="chip on" data-layer="rosysing" title="global mode: singularities of the rotation field (5 = index +1/6, 7 = −1/6) — the disclinations the curvature demands">field 5/7</button>
+        <button class="chip" data-layer="branch" title="global mode: branch points of the stripe phases (+/− winding) — where a stripe family must end or start = dislocations the geometry forces">branch points</button>
       </div>
       <div class="row" id="row-orient" hidden>
         <label>orient colour</label>

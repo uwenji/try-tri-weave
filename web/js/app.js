@@ -7,6 +7,7 @@ import { View } from './view.js';
 import { valenceHex, FAMILY_HEX, lutColor, misorRGB } from './colormap.js';
 import { frontState, predictGrowth, mapValue } from './frontspeed.js';
 import { FRONT } from './frontspeed_table.js';
+import { directionsFromNb0 } from './rosy.js';
 
 const SQ3 = Math.sqrt(3);
 const $ = (id) => document.getElementById(id);
@@ -16,7 +17,7 @@ const S = {
   manifest: [], carrier: null, solver: null, device: null,
   a: 2, valence: 6, centre: -1, centreMode: 'detected', detected: null,
   target: 3000, maxSteps: 20000, spf: 25, cgIters: 12, playing: false, busy: false,
-  r: -0.08, b: 1.2, dt: 0.1, seedKind: 'wave', seedR: 2.0, seedPhi: 0, disp: true,
+  r: -0.08, b: 1.2, dt: 0.1, seedKind: 'wave', seedR: 2.0, seedPhi: 0, disp: true, seedMode: 'local', rosy: null, stripesRes: null, globalReq: 0,
   lat: null, summary: null, strands: null, history: [], lastExtract: -1, extractEvery: 100, shownStep: -1, scrubbed: false,
   carrierView: 'u', lathW: 0.18, lathCol: 'family', overUnder: true, msg: '',
   theme: 'auto', showValence: {}, selLath: -1, selLathKey: null, selVertex: -1, selVertexKey: -1, armPick: false,
@@ -60,7 +61,7 @@ async function loadCarrierByName(name) {
 
 /** opts.refine: the same surface at another resolution — keep the camera, the centre and the selection */
 function setCarrier(c, aDefault, opts = {}) {
-  S.carrier = c; S.baseCarrier = c.base || c; S.refine = c.level || 0;
+  S.carrier = c; S.baseCarrier = c.base || c; S.refine = c.level || 0; S.rosy = null; S.stripesRes = null;
   S.playing = false; S.lat = null; S.summary = null; S.strands = null; S.history = []; S.lastExtract = -1;
   S.extractEvery = 100 * Math.max(1, Math.round(c.n / 12000));              // the read-out is O(n log n): less often on fine carriers
   const [lo, hi] = aRange(); S.a = Math.min(hi, Math.max(lo, aDefault || c.bbox / 13));
@@ -117,12 +118,68 @@ function newSolver(reseed) {
 
 function reseedNow() {
   const c = S.carrier, s = S.solver; if (!c || !s) return;
+  if (S.seedMode === 'global') { globalSeed(); return; }
   const u0 = c.seedField(S.centre, S.valence, S.a, { radius: S.seedR, kind: S.seedKind, phaseDeg: S.seedPhi });
   s.setInitial(u0);
+  afterReseed(`v${S.valence} at ${S.centre} (${S.centreMode})`);
+}
+
+/** no seed: smoothest 6-RoSy on the carrier → stripe phases of its three families → hexagonal u0 everywhere.
+ *  Both solves run in a module Worker on the base carrier and are lifted to the refined one (global_worker.js). */
+let gw = null, gwId = 0; const gwPending = new Map();
+function globalWorker() {
+  if (gw) return gw;
+  gw = new Worker(new URL('./global_worker.js', import.meta.url), { type: 'module' });
+  gw.onmessage = (e) => { const d = e.data, p = gwPending.get(d.id); if (!p) return; if (d.stage) { p.onStage(d.stage); return; } gwPending.delete(d.id); d.error ? p.reject(new Error(d.error)) : p.resolve(d); };
+  gw.onerror = (e) => { for (const p of gwPending.values()) p.reject(new Error(e.message || 'worker error')); gwPending.clear(); gw = null; };
+  return gw;
+}
+function runGlobalWorker(c, q0, onStage) {
+  return new Promise((resolve, reject) => {
+    const id = ++gwId; gwPending.set(id, { resolve, reject, onStage });
+    const pack = (cc) => ({ n: cc.n, Fi: cc.Fi, Li: cc.Li, B: cc.boundary, V: cc.V, N: cc.N });
+    const base = c.base || c, key = `${c.name}|${base.n}|${c.level || 0}|${c.n}`;
+    globalWorker().postMessage({ id, key, base: pack(base), fine: c.base ? pack(c) : null, q0 });
+  });
+}
+async function globalSeed(force = false) {
+  const c = S.carrier, s = S.solver; if (!c || !s) return;
+  const a = S.a, req = ++S.globalReq;
+  if (!force && S.stripesRes && S.stripesRes.carrier === c && S.stripesRes.a === a) { s.setInitial(S.stripesRes.u0); afterReseed(S.stripesRes.sum); return; }
+  S.seedPending = true; $('btn-rosy').disabled = true;
+  const base = c.base || c, progress = (stage) => { setStatus(stage); $('ro-rosy').textContent = `${stage} (base carrier ${base.n} v${c.base ? `, refined ${c.n} v` : ''})`; $('ro-stripes').textContent = 'the solver waits for the seed'; try { if (S.solver) showStep(S.solver.steps); } catch (e) { /* ignore */ } };
+  progress('starting the rotation-field worker…');
+  try {
+    const t0 = performance.now();
+    const d = await runGlobalWorker(c, 4 * Math.PI / (SQ3 * a), (stage) => { if (req === S.globalReq) progress(stage); });
+    if (req !== S.globalReq || S.carrier !== c) return;                      // superseded by a newer request
+    const ms = performance.now() - t0;
+    const hist = {}; for (const sg of d.singular) hist[sg.valence] = (hist[sg.valence] || 0) + 1;
+    const list = d.singular.map(sg => { const f = sg.face, ids = [base.Fi[3 * f], base.Fi[3 * f + 1], base.Fi[3 * f + 2]]; return { valence: sg.valence, index: sg.index, face: f, pos: cen(base.V, ids), nrm: cen(base.N, ids) }; });
+    const bc = d.branchOnBase ? base : c;
+    const branch = d.branch.map(b => { const f = b.face, ids = [bc.Fi[3 * f], bc.Fi[3 * f + 1], bc.Fi[3 * f + 2]]; return { ...b, pos: cen(bc.V, ids), nrm: cen(bc.N, ids) }; });
+    S.rosy = { carrier: c, list, hist, theta: d.theta, nb0: d.nb0, dirs: [0, 1, 2].map(k => directionsFromNb0(c, d.theta, d.nb0, 6, k)) };
+    const np = branch.filter(b => b.winding > 0).length, nm = branch.length - np;
+    const sum = `global field · ${d.singular.length} field singularities · ${branch.length} branch points`;
+    S.stripesRes = { carrier: c, a, u0: d.u0, branch, sum };
+    const omega6 = c.omega * 180 / Math.PI / 60, parts = Object.entries(hist).map(([v, k]) => `${k} × v${v}`).join(', ') || 'none';
+    const tt = (k) => d.t[k] !== undefined ? `${(d.t[k] / 1000).toFixed(1)} s` : '—';
+    $('ro-rosy').innerHTML = `rotation field (on the base carrier, ${d.nBase} v${c.base ? `, lifted to ${c.n} v` : ''}): ${d.singular.length} singular faces (${parts}) · Σ index = ${d.sumIndex}/6 vs Ω/60° = ${omega6.toFixed(1)} ${Math.abs(d.sumIndex - omega6) < 0.6 ? '✓' : '(rim turning not counted)'} · ${tt('rosy')}${c.base ? ` + lift ${tt('lift')}` : ''}`;
+    $('ro-stripes').innerHTML = `stripe phases at a = ${a.toFixed(2)}: ${branch.length} branch points (+${np} / −${nm}) ≈ ${Math.round(branch.length / 2)} dislocations forced by the geometry${c.base ? ` (${d.branchBase} on the base)` : ''} · worst family match ${(d.worstMatch * 180 / Math.PI).toFixed(0)}° · ${tt('stripes')}${c.base ? ` + lift ${tt('liftStripes')}` : ''} · total ${(ms / 1000).toFixed(1)} s`;
+    view.setRosy(S.rosy.dirs, 0.4 * a); view.setRosySingular(list); view.setBranch(branch);
+    s.setInitial(d.u0);
+    afterReseed(sum);
+    setStatus(`seeded from the rotation field (${d.singular.length} singularities, ${branch.length} branch points, ${(ms / 1000).toFixed(1)} s)`);
+  } catch (e) { console.error(e); setStatus('rotation field failed: ' + e.message); $('ro-rosy').textContent = 'rotation field failed: ' + e.message; }
+  finally { if (req === S.globalReq) { S.seedPending = false; $('btn-rosy').disabled = false; if (S.playing) pump(); } }
+}
+const cen = (A, ids) => [0, 1, 2].map(k => (A[3 * ids[0] + k] + A[3 * ids[1] + k] + A[3 * ids[2] + k]) / 3);
+
+function afterReseed(sum) {
   stopAnneal(true);
   S.history = []; S.lastExtract = -1; S.lat = null; S.summary = null; S.strands = null; S.es = null; S.orient = null; S.shownStep = -1; S.scrubbed = false;
   view.setLattice(null, null); view.setLaths(null, null, {}); view.setStrain(null); view.setOrientation(null); clearSelection(false); updateDirectionReadout();
-  setSum('sing', `v${S.valence} at ${S.centre} (${S.centreMode})`);
+  setSum('sing', sum);
   updateProbe(); updatePrediction();
   showStep(0); updateLatticeReadout(); drawChart();
 }
@@ -134,6 +191,7 @@ async function pump() {
   if (S.pumping) return; S.pumping = true;
   try {
     while (S.solver && S.solver.steps < S.target) {
+      if (S.seedPending) break;                                               // the global seed is still being solved: nothing to step yet
       const s = S.solver, t0 = performance.now(), n = Math.min(S.spfAuto || S.spf, S.target - s.steps);
       try { await s.step(n); } catch (e) { console.error(e); setStatus('solver error: ' + e.message); S.playing = false; S.target = s.steps; break; }
       const ms = performance.now() - t0; S.rate = n / Math.max(ms, 1e-3) * 1000;
@@ -166,7 +224,7 @@ function showStep(step) {
   if (S.carrierView === 'u') view.setFieldColors(u, 'viridis', U_RANGE[0], U_RANGE[1]);
   if (step < s.steps) { extract(u, false); S.scrubbed = true; }               // scrubbing back: lattice of that snapshot
   else if (S.scrubbed) { extract(s.u, false); S.scrubbed = false; }           // back at the live state (periodic extraction otherwise)
-  $('st-run').textContent = `· step ${step} / ${s.steps} (t = ${s.t.toFixed(0)}) · v${S.valence} seed · a = ${S.a.toFixed(3)}` + (S.anneal.active ? ` · anneal from ${S.anneal.startedAt}` : '') + (S.playing || s.steps < S.target ? ' · running' : '');
+  $('st-run').textContent = (S.seedPending ? '· waiting for the global seed ' : '') + `· step ${step} / ${s.steps} (t = ${s.t.toFixed(0)}) · ${S.seedMode === 'global' ? 'global seed' : `v${S.valence} seed`} · a = ${S.a.toFixed(3)}` + (S.anneal.active ? ` · anneal from ${S.anneal.startedAt}` : '') + (S.playing || s.steps < S.target ? ' · running' : '');
   updateGrowthLegend(); drawChart();
 }
 
@@ -866,6 +924,14 @@ function bind() {
   $('sl-seedr').addEventListener('change', (e) => { S.seedR = +e.target.value; reseedNow(); updateFrontReadout(); });
   $('sl-seedphi').addEventListener('input', (e) => { $('out-seedphi').value = e.target.value; });
   $('sl-seedphi').addEventListener('change', (e) => { S.seedPhi = +e.target.value; reseedNow(); });
+  for (const chip of document.querySelectorAll('#seed-mode .chip')) chip.addEventListener('click', () => {
+    S.seedMode = chip.dataset.mode;
+    for (const ch of document.querySelectorAll('#seed-mode .chip')) ch.classList.toggle('on', ch === chip);
+    $('global-block').hidden = S.seedMode !== 'global'; $('local-block').hidden = S.seedMode === 'global';
+    if (S.seedMode !== 'global') { view.setRosy(null); view.setRosySingular(null); view.setBranch(null); }
+    reseedNow();
+  });
+  $('btn-rosy').addEventListener('click', () => { if (S.seedMode !== 'global') { document.querySelector('#seed-mode .chip[data-mode="global"]').click(); } else globalSeed(true); });
   $('cb-disp').addEventListener('change', (e) => { S.disp = e.target.checked; if (S.solver) S.solver.setParams({ dispersion: S.disp }); updateDensityReadout(); setStatus(S.disp ? 'operator corrected for the carrier dispersion (edge = a), field kept' : 'operator uncorrected (edge ≈ a / (1 + (q0 h)²/32)), field kept'); });
   // solve
   $('sl-steps').addEventListener('input', (e) => { S.target = +e.target.value; $('out-steps').value = S.target; });

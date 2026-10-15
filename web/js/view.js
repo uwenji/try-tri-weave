@@ -31,7 +31,7 @@ export class View {
     this.fill = new THREE.DirectionalLight(0xffffff, 0.9); this.fill.position.set(1.5, 0.8, 0.6); this.scene.add(this.fill);
     this.group = new THREE.Group(); this.scene.add(this.group);
     this.layers = {};                                     // name → Object3D
-    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false };
+    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false, rosy: false, rosysing: true, branch: false };
     this.showValence = {};                                // valence → bool (missing = true)
     this.sideSign = 1;                                    // +1: overlays on the side of the carrier normals, −1: the other side
     this.raycaster = new THREE.Raycaster();
@@ -250,6 +250,43 @@ export class View {
       g.add(sp);
     }
     this._setLayer('singular', g);
+  }
+
+  // --- global rotation field (no seed) -------------------------------------------------------------------------
+  /** strokes of the three lattice directions at every carrier vertex (dirs: 3 × Float64Array(3n) unit vectors), length len */
+  setRosy(dirs, len) {
+    const c = this.carrier;
+    if (!c || !dirs) { this._setLayer('rosy', null); return; }
+    const n = c.n, lift = 0.4 * c.h, segs = new Float32Array(n * 3 * 6); let k = 0;
+    for (let i = 0; i < n; i++) {
+      const p = this.lifted(i, lift);
+      for (const d of dirs) { const dx = d[3 * i] * len / 2, dy = d[3 * i + 1] * len / 2, dz = d[3 * i + 2] * len / 2;
+        segs[k++] = p[0] - dx; segs[k++] = p[1] - dy; segs[k++] = p[2] - dz; segs[k++] = p[0] + dx; segs[k++] = p[1] + dy; segs[k++] = p[2] + dz; }
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(segs, 3));
+    this._setLayer('rosy', new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: this.colFg, transparent: true, opacity: 0.55 })));
+  }
+  /** singularities of the rotation field as valence discs at face centroids: list [{pos:[x,y,z], valence}] */
+  setRosySingular(list) {
+    const c = this.carrier;
+    if (!c || !list || !list.length) { this._setLayer('rosysing', null); return; }
+    const g = new THREE.Group(), da = this.a || 8 * c.h;
+    for (const sg of list) {
+      const q = [sg.pos[0] + this.sideSign * 1.6 * c.h * sg.nrm[0], sg.pos[1] + this.sideSign * 1.6 * c.h * sg.nrm[1], sg.pos[2] + this.sideSign * 1.6 * c.h * sg.nrm[2]];
+      g.add(this._disc(String(sg.valence), valenceHex(sg.valence), q, Math.max(1.9 * c.h, 0.3 * da), { kind: 'rosy', valence: sg.valence }));
+    }
+    this._setLayer('rosysing', g);
+  }
+  /** branch points of the stripe phases (where a stripe family must end/start): small accent discs with ± */
+  setBranch(list) {
+    const c = this.carrier;
+    if (!c || !list || !list.length) { this._setLayer('branch', null); return; }
+    const g = new THREE.Group(), da = this.a || 8 * c.h;
+    for (const b of list) {
+      const q = [b.pos[0] + this.sideSign * 1.2 * c.h * b.nrm[0], b.pos[1] + this.sideSign * 1.2 * c.h * b.nrm[1], b.pos[2] + this.sideSign * 1.2 * c.h * b.nrm[2]];
+      g.add(this._disc(b.winding > 0 ? '+' : '−', '#' + this.colAccent.getHexString(), q, Math.max(1.4 * c.h, 0.2 * da), { kind: 'branch', family: b.family }));
+    }
+    this._setLayer('branch', g);
   }
 
   /** larger disc with the lattice index on the selected peak (−1 clears) */

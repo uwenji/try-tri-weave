@@ -1,6 +1,6 @@
-# LocalSH Weave Lab — the browser version
+# Try-tri-weave — the remesh for weave mesh 
 
-The localised Swift–Hohenberg solver of `../localize_sh_app.py`, in JavaScript: the time stepping runs on
+The  Swift–Hohenberg solver of `../localize_sh_app.py`, in JavaScript: the time stepping runs on
 **WebGPU** (plain-JS fallback), three.js draws the view, and a new **laths** layer shows the Kagome strands of the
 extracted lattice as ribbons with adjustable width, over/under offset and family colouring. One seeded
 singularity per surface, the same equation and the same three sliders (valence · steps · density) as the
@@ -191,3 +191,14 @@ of conflicts is unavoidable — the panel shows the count rather than hiding it.
   installed; it imports `../carrier.py` and `../localize_sh_app.py` (for the synthetic cones).
 * Republishing: `python build_artifact.py`, then publish `artifact.html` with `style.css`, `js/`, `vendor/`,
   `manifest_artifact.json` as `manifest.json`, and each `carriers/X.lshc` as `carriers/X.wasm`.
+
+## Global mode — no seed (2026-10-15)
+Section 3 → `seed: global rotation field`. `js/rosy.js` solves the globally smoothest 6-fold direction field on the carrier
+(Knöppel–Crane–Pinkall–Schröder 2013; intrinsic frames, connection Laplacian, inverse iteration) — its singularities are the
+5s/7s the curvature demands (treeBig: exactly 30 sevens, six per fillet, twelve at the junction). `js/stripes.js` integrates the
+three stripe phases along it as one rank-3 bundle (Knöppel et al. 2015; families permute around singularities, conjugated when
+reversed); its branch points are the dislocations the geometry forces; u0 = ⅓ Σ Re ψ̂ is the hexagonal initial field everywhere.
+Layers: `rotation field`, `field 5/7`, `branch points`. Headless: `node test_rosy.mjs treeBig`, `node test_global.mjs treeBig 2500 1 321.2`
+(treeBig ×2 at 558 sites → {5:2, 6:469, 7:28, 8:2}, Σ(6−n) = −30). Not yet: the size-field metric ĝ for the field and the stripes
+(closed surfaces with spread curvature, e.g. the torus, still get 5–7 rows), and a Worker for the two solves (CPU, 10–40 s at ×2).
+`cb-disp` (section 2): the solvers now correct q0 for the carrier's dispersion (edge = a; see `test_dispersion.mjs`, `test_calibrate.mjs`).

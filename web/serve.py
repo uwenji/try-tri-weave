@@ -36,7 +36,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                       '.js': 'text/javascript', '.mjs': 'text/javascript', '.lshc': 'application/octet-stream', '.wasm': 'application/wasm', '.json': 'application/json'}
 
     def end_headers(self):
-        self.send_header('Cache-Control', 'no-cache')              # always pick up edited modules / re-exported carriers
+        self.send_header('Cache-Control', 'no-store')              # always refetch edited modules / re-exported carriers (no-cache still let Chrome reuse modules)
         super().end_headers()
 
     def log_message(self, fmt, *args):                              # quieter log: skip the per-module chatter
