@@ -27,7 +27,7 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-APP = 'LocalSH Weave Lab'
+APP = 'Try-Tri-Weave'
 PEM = 'localsh-selfsigned.pem'
 
 

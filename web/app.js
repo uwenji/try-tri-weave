@@ -1,4 +1,4 @@
-// LocalSH Weave Lab — app state, UI bindings and the frame loop.
+// Try-Tri-Weave — app state, UI bindings and the frame loop.
 import { Carrier, parseSTL } from './carrier.js';
 import { CpuSolver } from './solver_cpu.js';
 import { GpuSolver, getDevice } from './solver_gpu.js';
@@ -832,7 +832,7 @@ function chartStepAt(clientX) {
 // ------------------------------------------------------------------ export
 function exportLattice() {
   const lat = S.lat, c = S.carrier; if (!lat) { setStatus('nothing to export yet'); return; }
-  const lines = [`# LocalSH ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${S.solver.steps} steps, r = ${S.r}, b = ${S.b}${S.anneal.active ? `, annealed from step ${S.anneal.startedAt} at r = ${S.anneal.r2}, b = ${S.anneal.b2}` : ''}, sum(6-n) interior = ${S.summary.charge}`];
+  const lines = [`# TryTriWeave ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${S.solver.steps} steps, r = ${S.r}, b = ${S.b}${S.anneal.active ? `, annealed from step ${S.anneal.startedAt} at r = ${S.anneal.r2}, b = ${S.anneal.b2}` : ''}, sum(6-n) interior = ${S.summary.charge}`];
   const P = lat.P; for (let i = 0; i < P.length / 3; i++) lines.push(`v ${P[3 * i].toFixed(6)} ${P[3 * i + 1].toFixed(6)} ${P[3 * i + 2].toFixed(6)}`);
   const T = lat.tris; for (let t = 0; t < T.length / 3; t++) lines.push(`f ${T[3 * t] + 1} ${T[3 * t + 1] + 1} ${T[3 * t + 2] + 1}`);
   const sing = S.summary.singular.map(i => `# singular ${i}: valence ${lat.valence[i]} charge ${6 - lat.valence[i]}`);
