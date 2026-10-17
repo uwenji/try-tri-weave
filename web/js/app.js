@@ -5,6 +5,7 @@ import { GpuSolver, getDevice } from './solver_gpu.js';
 import { extractLattice, chargeSummary, traceStrands, edgeStrain, orientationField } from './lattice.js';
 import { View } from './view.js';
 import { valenceHex, FAMILY_HEX, lutColor, misorRGB } from './colormap.js';
+import { MinHeap } from './sparse.js';
 import { frontState, predictGrowth, mapValue } from './frontspeed.js';
 import { FRONT } from './frontspeed_table.js';
 import { directionsFromNb0 } from './rosy.js';
@@ -19,7 +20,7 @@ const S = {
   target: 3000, maxSteps: 20000, spf: 25, cgIters: 12, playing: false, busy: false,
   r: -0.08, b: 1.2, dt: 0.1, seedKind: 'wave', seedR: 2.0, seedPhi: 0, disp: true, seedMode: 'local', rosy: null, stripesRes: null, globalReq: 0,
   lat: null, summary: null, strands: null, history: [], lastExtract: -1, extractEvery: 100, shownStep: -1, scrubbed: false,
-  carrierView: 'u', lathW: 0.18, lathCol: 'family', overUnder: true, msg: '',
+  carrierView: 'u', carrierAlpha: 1, stripeAlpha: [1, 1, 1], stripesShown: null, lathW: 0.18, lathCol: 'family', overUnder: true, msg: '',
   theme: 'auto', showValence: {}, selLath: -1, selLathKey: null, selVertex: -1, selVertexKey: -1, armPick: false,
   turntable: false, turnSpeed: 12, projection: 'persp',
   refine: 0, baseCarrier: null, side: 1, cgManual: false,
@@ -61,7 +62,7 @@ async function loadCarrierByName(name) {
 
 /** opts.refine: the same surface at another resolution — keep the camera, the centre and the selection */
 function setCarrier(c, aDefault, opts = {}) {
-  S.carrier = c; S.baseCarrier = c.base || c; S.refine = c.level || 0; S.rosy = null; S.stripesRes = null;
+  S.carrier = c; S.baseCarrier = c.base || c; S.refine = c.level || 0; S.rosy = null; S.stripesRes = null; S.stripesShown = null;
   S.playing = false; S.lat = null; S.summary = null; S.strands = null; S.history = []; S.lastExtract = -1;
   S.extractEvery = 100 * Math.max(1, Math.round(c.n / 12000));              // the read-out is O(n log n): less often on fine carriers
   const [lo, hi] = aRange(); S.a = Math.min(hi, Math.max(lo, aDefault || c.bbox / 13));
@@ -137,7 +138,7 @@ function globalWorker() {
 function runGlobalWorker(c, q0, onStage) {
   return new Promise((resolve, reject) => {
     const id = ++gwId; gwPending.set(id, { resolve, reject, onStage });
-    const pack = (cc) => ({ n: cc.n, Fi: cc.Fi, Li: cc.Li, B: cc.boundary, V: cc.V, N: cc.N });
+    const pack = (cc) => ({ n: cc.n, Fi: cc.Fi, Li: cc.Li, B: cc.boundary, V: cc.V, N: cc.N, F: cc.F });
     const base = c.base || c, key = `${c.name}|${base.n}|${c.level || 0}|${c.n}`;
     globalWorker().postMessage({ id, key, base: pack(base), fine: c.base ? pack(c) : null, q0 });
   });
@@ -158,15 +159,16 @@ async function globalSeed(force = false) {
     const list = d.singular.map(sg => { const f = sg.face, ids = [base.Fi[3 * f], base.Fi[3 * f + 1], base.Fi[3 * f + 2]]; return { valence: sg.valence, index: sg.index, face: f, pos: cen(base.V, ids), nrm: cen(base.N, ids) }; });
     const bc = d.branchOnBase ? base : c;
     const branch = d.branch.map(b => { const f = b.face, ids = [bc.Fi[3 * f], bc.Fi[3 * f + 1], bc.Fi[3 * f + 2]]; return { ...b, pos: cen(bc.V, ids), nrm: cen(bc.N, ids) }; });
-    S.rosy = { carrier: c, list, hist, theta: d.theta, nb0: d.nb0, dirs: [0, 1, 2].map(k => directionsFromNb0(c, d.theta, d.nb0, 6, k)) };
+    S.rosy = { carrier: c, list, hist, theta: d.theta, nb0: d.nb0, dirs: [0, 1, 2].map(k => directionsFromNb0(c, d.theta, d.nb0, 6, k)), density: null };
     const np = branch.filter(b => b.winding > 0).length, nm = branch.length - np;
     const sum = `global field · ${d.singular.length} field singularities · ${branch.length} branch points`;
-    S.stripesRes = { carrier: c, a, u0: d.u0, branch, sum };
+    S.stripesRes = { carrier: c, a, u0: d.u0, branch, sum, faces: d.stripeFaces || null };
     const omega6 = c.omega * 180 / Math.PI / 60, parts = Object.entries(hist).map(([v, k]) => `${k} × v${v}`).join(', ') || 'none';
     const tt = (k) => d.t[k] !== undefined ? `${(d.t[k] / 1000).toFixed(1)} s` : '—';
     $('ro-rosy').innerHTML = `rotation field (on the base carrier, ${d.nBase} v${c.base ? `, lifted to ${c.n} v` : ''}): ${d.singular.length} singular faces (${parts}) · Σ index = ${d.sumIndex}/6 vs Ω/60° = ${omega6.toFixed(1)} ${Math.abs(d.sumIndex - omega6) < 0.6 ? '✓' : '(rim turning not counted)'} · ${tt('rosy')}${c.base ? ` + lift ${tt('lift')}` : ''}`;
     $('ro-stripes').innerHTML = `stripe phases at a = ${a.toFixed(2)}: ${branch.length} branch points (+${np} / −${nm}) ≈ ${Math.round(branch.length / 2)} dislocations forced by the geometry${c.base ? ` (${d.branchBase} on the base)` : ''} · worst family match ${(d.worstMatch * 180 / Math.PI).toFixed(0)}° · ${tt('stripes')}${c.base ? ` + lift ${tt('liftStripes')}` : ''} · total ${(ms / 1000).toFixed(1)} s`;
-    view.setRosy(S.rosy.dirs, 0.4 * a); view.setRosySingular(list); view.setBranch(branch);
+    view.setRosy(S.rosy.dirs, 0.4 * a);
+    if (S.carrierView === 'rosysing' || S.carrierView === 'stripes') updateCarrierColors();
     s.setInitial(d.u0);
     afterReseed(sum);
     setStatus(`seeded from the rotation field (${d.singular.length} singularities, ${branch.length} branch points, ${(ms / 1000).toFixed(1)} s)`);
@@ -413,17 +415,70 @@ function predictionGap() {
 
 function updateCarrierColors() {
   const c = S.carrier; if (!c) return;
-  if (S.carrierView === 'u') { S.shownStep = -1; return; }
-  if (S.carrierView === 'none') { const col = getComputedStyle(document.documentElement).getPropertyValue('--mesh').trim(); const rgb = hexToRgb(col); view.setFlatColor(rgb); return; }
+  const mode = S.carrierView, flat = () => view.setFlatColor(hexToRgb(getComputedStyle(document.documentElement).getPropertyValue('--mesh').trim()));
+  const needGlobal = 'needs the global rotation field: 3 Singularity → global rotation field → Solve';
+  if (mode !== 'stripes') view.setCarrierMode('vertex');
+  if (mode === 'u') { S.shownStep = -1; updateCarrierUI(''); return; }
+  if (mode === 'none') { flat(); updateCarrierUI(''); return; }
+  if (mode === 'stripes') {
+    const R = S.stripesRes;
+    if (!R || R.carrier !== c || !R.faces) { flat(); updateCarrierUI(needGlobal); return; }
+    if (S.stripesShown !== R.faces) { view.setStripes(R.faces); S.stripesShown = R.faces; }
+    view.setCarrierMode('stripes');
+    updateCarrierUI(`the seed's three stripe phases (before SH), drawn where each family's laths would run (band = lath width) · a band that stops is a branch point; two families stopping together make a 5–7 pair · around a field 5 or 7 the colours swap across a seam${Math.abs(R.a - S.a) > 1e-9 ? ` · <span class="warn">phases from a = ${R.a.toFixed(2)}</span>` : ''}`);
+    return;
+  }
+  if (mode === 'rosysing') {
+    const d = fieldChargeDensity();
+    if (!d) { flat(); updateCarrierUI(needGlobal); return; }
+    view.setFieldColors(d.vals, 'coolwarm', -d.v, d.v);
+    const parts = Object.entries(S.rosy.hist).map(([v, k]) => `${k} × ${v}`).join(', ') || 'none';
+    updateCarrierUI(`singularities of the rotation field (${parts}): red = 5 (+60°), blue = 7 (−60°); full colour at the singular face, fading within about two lattice edges (σ = 0.8 a along the surface)`);
+    return;
+  }
   const vals = new Float64Array(c.n);
-  if (S.carrierView === 'K') {
+  if (mode === 'K') {
     const b = c.base || c, kb = new Float64Array(b.n);                                   // defects sit on the base vertices; show their base-level density
     for (let i = 0; i < b.n; i++) kb[i] = b.boundary[i] ? 0 : b.K[i] / Math.max(b.m[i], 1e-300);
     vals.set(c.interp(kb));
   } else { const w = c.smoothedCurvature(Math.max(S.a, 2 * c.hBase)); vals.set(w); }
   const abs = Array.from(vals, Math.abs).sort((x, y) => x - y); const v = abs[Math.floor(abs.length * 0.98)] || 1;
   view.setFieldColors(vals, 'coolwarm', -v, v);
+  updateCarrierUI('');
 }
+/** the rotation field's singular faces as charges (index: +1 for a 5, −1 for a 7, +2 for a 4 …), each spread as a
+ *  Gaussian of the geodesic distance (σ = 0.8 a, bounded Dijkstra on the intrinsic edges from the face corners) and
+ *  summed: one singularity is full colour at its face and fades within about two lattice edges. Cached per σ. */
+function fieldChargeDensity() {
+  const c = S.carrier, R = S.rosy; if (!c || !R || R.carrier !== c) return null;
+  const sigma = 0.8 * S.a, key = sigma.toPrecision(3);
+  if (R.density && R.density.key === key) return R.density;
+  const b = c.base || c, G = c.graph, V = c.V, n = c.n, vals = new Float64Array(n), dist = new Float64Array(n).fill(Infinity), cut = 3 * sigma;
+  for (const sg of R.list) {
+    const ids = [b.Fi[3 * sg.face], b.Fi[3 * sg.face + 1], b.Fi[3 * sg.face + 2]], touched = [], heap = new MinHeap(256);   // base ids are kept by the refinement
+    const cx = [0, 1, 2].map(k => (V[3 * ids[0] + k] + V[3 * ids[1] + k] + V[3 * ids[2] + k]) / 3);
+    for (const i of ids) { const d0 = Math.hypot(V[3 * i] - cx[0], V[3 * i + 1] - cx[1], V[3 * i + 2] - cx[2]); if (d0 < dist[i]) { if (dist[i] === Infinity) touched.push(i); dist[i] = d0; heap.push(d0, i); } }
+    while (heap.size) {
+      const [d, i] = heap.pop(); if (d > dist[i]) continue;
+      for (let k = G.indptr[i]; k < G.indptr[i + 1]; k++) {
+        const j = G.indices[k], nd = d + G.data[k];
+        if (nd < dist[j] && nd <= cut) { if (dist[j] === Infinity) touched.push(j); dist[j] = nd; heap.push(nd, j); }
+      }
+    }
+    for (const i of touched) { vals[i] += sg.index * Math.exp(-0.5 * (dist[i] / sigma) ** 2); dist[i] = Infinity; }
+  }
+  R.density = { key, sigma, vals, v: 1 };
+  return R.density;
+}
+/** opacity sliders: one for the vertex colourings, three (red, yellow, blue) for the stripes; plus the note line */
+function updateCarrierUI(note) {
+  const m = S.carrierView;
+  $('row-carrier-alpha').hidden = m === 'none' || m === 'stripes';
+  $('row-stripe-alpha').hidden = m !== 'stripes';
+  const el = $('ro-carrier-view'); el.hidden = !note; el.innerHTML = note || '';
+}
+/** band half-width of the stripes view in radians of phase: the lath width w·a over the stripe wave number q0 = 4π/(√3 a) */
+const stripeHalfWidth = () => Math.min(3.0, 2 * Math.PI * S.lathW / SQ3);
 function hexToRgb(h) { const m = /^#?([0-9a-f]{6})$/i.exec(h); if (!m) return [0.85, 0.85, 0.85]; const n = parseInt(m[1], 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; }
 
 function updateDensityReadout() {
@@ -470,7 +525,7 @@ function setSide(sign) {
 function onDensityChange(a) {
   const [lo, hi] = aRange(); S.a = Math.min(hi, Math.max(lo, a));
   $('sl-a').value = sliderFromA(S.a); $('nb-a').value = S.a.toFixed(3);
-  updateDensityReadout(); detect(); applyCgIters(); if (S.carrierView === 'Ks') updateCarrierColors();
+  updateDensityReadout(); detect(); applyCgIters(); if (S.carrierView === 'Ks' || S.carrierView === 'rosysing' || S.carrierView === 'stripes') updateCarrierColors();   // field 5/7 spreads over σ = 0.8 a
   S.geo = null; S.solver.setParams({ a: S.a }); reseedNow();
   setStatus(`q0 = ${(4 * Math.PI / (SQ3 * S.a)).toFixed(3)} · ${sites().toFixed(0)} sites expected`);
 }
@@ -550,7 +605,8 @@ function updatePrediction() {
   const geo = geoFor(); if (!geo) { S.pred = null; return; }
   try {
     S.pred = predictGrowth(geo, { a: S.a, seedR: S.seedR, seedKind: S.seedKind, valence: S.valence, r: S.r, b: S.b, dt: S.dt,
-      anneal: { ...S.anneal, startedAt: S.anneal.active ? S.anneal.startedAt : -1 }, xmax: predXmax(), every: 50 });
+      anneal: { ...S.anneal, startedAt: S.anneal.active ? S.anneal.startedAt : -1 }, xmax: predXmax(), every: 50,
+      siteScale: S.disp || !S.carrier ? 1 : 1 / (1 + (4 * Math.PI / (SQ3 * S.a) * S.carrier.h) ** 2 / 48) });
   } catch (e) { console.error(e); S.pred = null; }
   updateFrontReadout(); drawChart(); drawPhase(); drawDtChart();
 }
@@ -928,11 +984,11 @@ function bind() {
     S.seedMode = chip.dataset.mode;
     for (const ch of document.querySelectorAll('#seed-mode .chip')) ch.classList.toggle('on', ch === chip);
     $('global-block').hidden = S.seedMode !== 'global'; $('local-block').hidden = S.seedMode === 'global';
-    if (S.seedMode !== 'global') { view.setRosy(null); view.setRosySingular(null); view.setBranch(null); }
+    if (S.seedMode !== 'global') view.setRosy(null);
     reseedNow();
   });
   $('btn-rosy').addEventListener('click', () => { if (S.seedMode !== 'global') { document.querySelector('#seed-mode .chip[data-mode="global"]').click(); } else globalSeed(true); });
-  $('cb-disp').addEventListener('change', (e) => { S.disp = e.target.checked; if (S.solver) S.solver.setParams({ dispersion: S.disp }); updateDensityReadout(); setStatus(S.disp ? 'operator corrected for the carrier dispersion (edge = a), field kept' : 'operator uncorrected (edge ≈ a / (1 + (q0 h)²/32)), field kept'); });
+  $('cb-disp').addEventListener('change', (e) => { S.disp = e.target.checked; if (S.solver) S.solver.setParams({ dispersion: S.disp }); updateDensityReadout(); updatePrediction(); setStatus(S.disp ? 'operator corrected for the carrier dispersion (edge = a), field kept' : 'operator uncorrected (edge ≈ a / (1 + (q0 h)²/48)), field kept'); });
   // solve
   $('sl-steps').addEventListener('input', (e) => { S.target = +e.target.value; $('out-steps').value = S.target; });
   $('btn-run').addEventListener('click', () => { S.playing = !S.playing; $('btn-run').textContent = S.playing ? 'Pause' : 'Run'; if (S.playing && S.solver && S.target <= S.solver.steps) { S.target = Math.min(S.maxSteps, S.solver.steps + S.spf); syncStepsUI(); } });
@@ -967,10 +1023,13 @@ function bind() {
   for (const ch of document.querySelectorAll('#side-chips .chip')) ch.addEventListener('click', () => setSide(+ch.dataset.side));
   // view
   for (const chip of document.querySelectorAll('#chips .chip, #dens-chips .chip')) chip.addEventListener('click', () => setLayer(chip.dataset.layer, !chip.classList.contains('on')));
-  $('sl-lathw').addEventListener('input', (e) => { $('out-lathw').value = (+e.target.value).toFixed(2); S.lathW = +e.target.value; updateLaths(); updateDensityReadout(); });
+  $('sl-lathw').addEventListener('input', (e) => { $('out-lathw').value = (+e.target.value).toFixed(2); S.lathW = +e.target.value; view.setStripeParams({ halfWidth: stripeHalfWidth() }); updateLaths(); updateDensityReadout(); });
   $('sel-lathcol').addEventListener('change', (e) => { S.lathCol = e.target.value; updateLaths(); });
   $('ck-overunder').addEventListener('change', (e) => { S.overUnder = e.target.checked; updateLaths(); });
   $('sel-carrier').addEventListener('change', (e) => { S.carrierView = e.target.value; updateCarrierColors(); if (S.carrierView === 'u') showStep(S.shownStep >= 0 ? S.shownStep : 0); });
+  const pct = (x) => `${Math.round(100 * x)} %`;
+  $('sl-carrier-alpha').addEventListener('input', (e) => { S.carrierAlpha = +e.target.value; $('out-carrier-alpha').value = pct(S.carrierAlpha); view.setFieldAlpha(S.carrierAlpha); });
+  for (let k = 0; k < 3; k++) $('sl-stripe-' + k).addEventListener('input', (e) => { S.stripeAlpha[k] = +e.target.value; $('out-stripe-' + k).value = pct(S.stripeAlpha[k]); view.setStripeParams({ alpha: S.stripeAlpha }); });
   // picking: click without drag
   const gl = $('gl'); let down = null;
   gl.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
@@ -1030,7 +1089,7 @@ function bind() {
     try { await navigator.clipboard.writeText(ta.value); $('modal-copy').textContent = 'Copied'; setTimeout(() => { $('modal-copy').textContent = 'Copy'; }, 1500); }
     catch (e) { ta.focus(); ta.select(); }
   });
-  const onTheme = () => { view.applyTheme(); drawChart(); drawPhase(); drawDtChart(); drawDensityDiagram(); drawChargeDiagram(); drawOrientLegend(); updateProbe(); if (S.carrierView === 'none') updateCarrierColors(); if (S.lat) { view.setLattice(S.lat, S.summary); view.setSelectedVertex(S.selVertex); updateLaths(); updateDirectionLayers(); } };
+  const onTheme = () => { view.applyTheme(); drawChart(); drawPhase(); drawDtChart(); drawDensityDiagram(); drawChargeDiagram(); drawOrientLegend(); updateProbe(); if (S.carrierView !== 'u') updateCarrierColors(); if (S.lat) { view.setLattice(S.lat, S.summary); view.setSelectedVertex(S.selVertex); updateLaths(); updateDirectionLayers(); } };
   try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', onTheme); } catch (e) { /* ignore */ }
   new MutationObserver(onTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.addEventListener('resize', () => { drawChart(); drawPhase(); drawDtChart(); });
@@ -1056,6 +1115,7 @@ window.addEventListener('unhandledrejection', (e) => setStatus('error: ' + (e.re
 
 async function main() {
   bind(); initTips();
+  view.setFieldAlpha(S.carrierAlpha); view.setStripeParams({ alpha: S.stripeAlpha, halfWidth: stripeHalfWidth() });
   try { const t = localStorage.getItem('localsh-theme'); if (t && t !== 'auto') setTheme(t); } catch (e) { /* ignore */ }
   $('sl-steps').max = S.maxSteps; $('nb-max').value = S.maxSteps;
   if (window.top !== window.self) $('modal-download').hidden = true;      // the artifact viewer blocks page downloads

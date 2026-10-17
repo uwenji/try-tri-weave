@@ -60,6 +60,15 @@ details.sec > summary .chev { width: 7px; height: 7px; border-right: 1.5px solid
 details.sec[open] > summary .chev { transform: rotate(45deg) translate(-1px, -1px); }
 details.sec > summary .sum { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 62%; text-align: right; }
 details.sec > .body { padding: 0 0 12px; }
+/* 6 Explain: a link drawn as one more section header */
+a.sec-link { display: flex; align-items: center; gap: 8px; padding: 10px 0 9px; min-width: 0; color: inherit; text-decoration: none; }
+a.sec-link h2 { margin: 0; flex: 0 0 auto; }
+a.sec-link .chev { width: 7px; height: 7px; border-right: 1.5px solid var(--dim); border-bottom: 1.5px solid var(--dim); transform: rotate(-45deg) translate(-1px, 1px); flex: 0 0 auto; }
+a.sec-link .sum { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--dim); white-space: nowrap; }
+a.sec-link:hover h2, a.sec-link:focus-visible h2 { color: var(--fg); }
+a.sec-link:hover .sum, a.sec-link:focus-visible .sum { color: var(--accent); }
+a.sec-link:hover .chev { border-color: var(--fg); }
+a.sec-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; min-width: 0; }
 .row label { color: var(--fg); min-width: 0; }
 .row.slider { flex-wrap: nowrap; }
@@ -67,6 +76,7 @@ details.sec > .body { padding: 0 0 12px; }
 .row.slider input[type=range] { flex: 1 1 auto; min-width: 60px; accent-color: var(--accent); }
 .row.slider output { width: 52px; text-align: right; font-size: 12.5px; }
 .row.buttons { gap: 6px; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 select, .num, textarea { font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
 select { max-width: 230px; }
 .num { width: 78px; font-family: var(--font-mono); font-size: 12.5px; }

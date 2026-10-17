@@ -1,0 +1,9 @@
+# macOS / editors
+.DS_Store
+# serve.py --https writes a self-signed certificate with its private key here: never commit it
+*.pem
+# local runs and tooling
+__pycache__/
+node_modules/
+*.jsonl
+dump_*.json

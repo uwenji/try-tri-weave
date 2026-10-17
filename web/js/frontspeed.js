@@ -1,10 +1,11 @@
 // Front-speed model of the subcritical SH23 pattern and the growth prediction drawn over the tracked read-outs.
 //   flat table v(r, b)  →  circular front dR/dt = (v − D/(q0 R)) / q0  →  covered area A(R) on the carrier (geodesic
-//   distance from the centre)  →  predicted peaks = A(R) / (√3⁄2 · (0.975 a)²), interior = A(R − 0.85 a) / site.
+//   distance from the centre)  →  predicted peaks = A(R) / (√3⁄2 · (s a)²), interior = A(R − 0.85 a) / site, with s the
+//   realised lattice edge / a: 1 with the carrier dispersion correction (solver_cpu.js setParams), else ≈ 1/(1 + (q0 h)²/48).
 import { FRONT } from './frontspeed_table.js';
 
 const SQ3 = Math.sqrt(3);
-export const SITE_SCALE = 0.975;                   // SH23 at r = −0.08, b = 1.2 realises a lattice edge of 0.975 a
+export const SITE_SCALE = 1;                       // realised edge / a with the dispersion correction on (zoo, closed shapes: peaks / sites = 0.99); p.siteScale overrides
 const INTERIOR_LAG = 0.85;                         // interior peaks (closed link) trail the outermost peaks by ≈ 0.85 a
 
 function dtFactor(dt) {
@@ -54,7 +55,7 @@ export function frontState(r, b, dt = 0.1) {
 
 /** Prediction for the growth strip.
  *  geo = { dist (Float64Array, geodesic distance from the centre), m (vertex areas), K (angle defects), boundary }
- *  p   = { a, seedR, seedKind, valence, r, b, dt, anneal: {on, r2, b2, when: 'auto'|'step', step, startedAt}, xmax, every } */
+ *  p   = { a, seedR, seedKind, valence, r, b, dt, anneal: {on, r2, b2, when: 'auto'|'step', step, startedAt}, xmax, every, siteScale } */
 export function predictGrowth(geo, p) {
   const { dist, m, K, boundary, rim } = geo, n = dist.length, a = p.a;
   const order = Array.from({ length: n }, (_, i) => i).sort((i, j) => dist[i] - dist[j]);
@@ -66,7 +67,7 @@ export function predictGrowth(geo, p) {
   }
   const total = sa, Rmax = dist[order[n - 1]];
   const at = (arr, R) => { if (R <= 0) return 0; let lo = 0, hi = n; while (lo < hi) { const mid = (lo + hi) >> 1; if (dist[order[mid]] < R) lo = mid + 1; else hi = mid; } return lo ? arr[lo - 1] : 0; };
-  const q0 = 4 * Math.PI / (SQ3 * a), site = SQ3 / 2 * (SITE_SCALE * a) ** 2;
+  const q0 = 4 * Math.PI / (SQ3 * a), site = SQ3 / 2 * ((p.siteScale ?? SITE_SCALE) * a) ** 2;
   const seedCharge = 6 - p.valence;
   const grow = frontState(p.r, p.b, p.dt), ann = p.anneal && p.anneal.on ? frontState(p.anneal.r2, p.anneal.b2, p.dt) : null;
   let R = (p.seedKind === 'spots' ? 1.3 : 0.82 * p.seedR) * a;

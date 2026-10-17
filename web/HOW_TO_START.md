@@ -1,11 +1,10 @@
-# How to start — LocalSH Weave Lab (web)
+# How to start — TryTriWeave (web)
 
 Three ways, from quickest to most flexible.
 
 ## 1 · Online, nothing to install
 
-Open the Claude artifact **LocalSH Weave Lab** (link in the chat, or in your artifact gallery) in Chrome, Edge
-or Safari. The pill at the top right should read `WebGPU · …`; if it reads `CPU (JS)` the browser has no
+Open <https://uwenji.github.io/try-tri-weave/web/> (GitHub Pages) in Chrome, Edge or Safari. The pill at the top right should read `WebGPU · …`; if it reads `CPU (JS)` the browser has no
 WebGPU and the plain-JavaScript solver runs instead (about 5–10× slower, same results).
 
 ## 2 · On your Mac, from this folder
@@ -27,7 +26,7 @@ Stop the server with Ctrl-C. Another port: `python serve.py --port 8090`.
 `serve.py` prints a second URL of the form `http://192.168.x.x:8080/` — open that on the other device
 (macOS may ask once to allow incoming connections for Python; allow). Over plain http the other device gets the
 CPU solver, because browsers only enable WebGPU on "secure" pages (localhost or https). For WebGPU on the other
-device either open the Claude artifact (it is https) or run
+device either open the GitHub Pages site (it is https) or run
 
 ```bash
 python serve.py --https             # https://192.168.x.x:8443/, self-signed certificate made once with openssl
@@ -89,9 +88,6 @@ What "ideal" looks like: exactly one singular peak and Σ(6−n) = round(Ω/60°
 
 ## Update the online version
 
-```bash
-python build_artifact.py        # index.html → artifact.html (body only, as the artifact host wants it)
-```
-
-then publish `artifact.html` with the same supporting files (the carriers go up under the `.wasm` extension,
-`manifest_artifact.json` is served as `manifest.json`) — ask Claude to republish, it has the file map.
+Copy `index.html`, `style.css`, `manifest.json`, `Tri-Weave-Lattice-Equations.html`, `carriers/`, `js/`, `vendor/`,
+`serve.py` and the two `.md` files into `TryTriWeave/web/`, then commit and push; GitHub Pages serves the folder as is
+(<https://uwenji.github.io/try-tri-weave/web/>). The test, calibration and artifact files stay in `localize/web`.

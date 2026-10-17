@@ -1,6 +1,7 @@
-// three.js view: carrier mesh coloured by the field, wireframe, lattice edges, peaks, singular vertices as labelled
-// discs (one layer per valence), the centre marker, the selected vertex, and the lath ribbons (Kagome strands)
-// with adjustable width, over/under offset, family colouring and a highlighted (selected) path. Z is up.
+// three.js view: carrier mesh coloured by the field (with an opacity toward the plain mesh colour) or by the three
+// stripe phases of the global seed, wireframe, lattice edges, peaks, singular vertices as labelled discs (one layer
+// per valence), the centre marker, the selected vertex, and the lath ribbons (Kagome strands) with adjustable width,
+// over/under offset, family colouring and a highlighted (selected) path. Z is up.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mapColors, lutColor, FAMILY_COLORS, STRAND_COLORS, PLAIN_LATH, valenceHex } from './colormap.js';
@@ -8,6 +9,12 @@ import { NavCube } from './navcube.js';
 
 const cssVar = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 const cssColor = (name, fallback) => new THREE.Color(cssVar(name, fallback));
+/** a CSS colour token as raw [0, 1] numbers: the convention of the carrier's vertex colours (no sRGB → linear step) */
+const cssRaw = (name, fallback) => { const m = /^#?([0-9a-f]{6})$/i.exec(cssVar(name, fallback)) || /^#?([0-9a-f]{6})$/i.exec(fallback); const n = parseInt(m[1], 16); return new THREE.Vector3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255); };
+/** a CSS colour token as linear RGB (shown as the token's own colour) */
+const cssLinear = (name, fallback) => { const c = cssColor(name, fallback); return new THREE.Vector3(c.r, c.g, c.b); };
+/** stripe colours, one per colour slot of the stripe phases: red, yellow, blue (the lath family tokens, true colour) */
+const STRIPE_TOKENS = [['--fam-c', '#BB5566'], ['--fam-b', '#DDAA33'], ['--fam-a', '#004488']];
 const Z_UP = new THREE.Vector3(0, 0, 1);
 const HOME_DIR = new THREE.Vector3(-0.85, -1.15, 0.7).normalize();          // the default three-quarter view from the front-left, above
 const POLE_EPS = 2e-3;                                                        // z-up: top/bottom views keep this tilt so the azimuth stays defined
@@ -31,7 +38,10 @@ export class View {
     this.fill = new THREE.DirectionalLight(0xffffff, 0.9); this.fill.position.set(1.5, 0.8, 0.6); this.scene.add(this.fill);
     this.group = new THREE.Group(); this.scene.add(this.group);
     this.layers = {};                                     // name → Object3D
-    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false, rosy: false, rosysing: true, branch: false };
+    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false, rosy: false };
+    this.fieldAlpha = 1;                                  // carrier colours: 1 = the colour map, 0 = the plain mesh colour
+    this.stripeAlpha = [1, 1, 1]; this.stripeHalfW = 0.65; // stripes: opacity per colour slot, band half-width in radians of phase
+    this.carrierMode = 'vertex';                          // 'vertex' (vertex colours) | 'stripes' (per-face phases, shaded per pixel)
     this.showValence = {};                                // valence → bool (missing = true)
     this.sideSign = 1;                                    // +1: overlays on the side of the carrier normals, −1: the other side
     this.raycaster = new THREE.Raycaster();
@@ -50,6 +60,8 @@ export class View {
     if (this.layers.wire) { this.layers.wire.children[0].material.color.copy(this.colKnot); this.layers.wire.children[1].material.color.copy(this.colAccent); }
     if (this.layers.probe) this.layers.probe.traverse(o => { if (o.material && o.userData.role === 'fg') o.material.color.copy(this.colFg); if (o.material && o.userData.role === 'accent') o.material.color.copy(this.colAccent); });
     if (this.layers.lattice) this.layers.lattice.material.color.copy(this.colKnot);
+    if (this.matField) this.matField.userData.u.uBase.value.copy(cssRaw('--mesh', '#e0e0de'));
+    if (this.matStripes) { const u = this.matStripes.userData.u; u.uBase.value.copy(cssRaw('--mesh', '#e0e0de')); STRIPE_TOKENS.forEach(([n, f], k) => u.uFam.value[k].copy(cssLinear(n, f))); }
     this.labelCache.clear();
     if (this.nav) this.nav.applyTheme();
   }
@@ -163,6 +175,8 @@ export class View {
   /** opts.keepCamera: keep the current view (refinement of the same surface) */
   setCarrier(c, opts = {}) {
     this.carrier = c;
+    for (const o of [this.geoField, this.stripeGeo, this.matField, this.matStripes]) o?.dispose?.();   // whichever the mesh is not showing
+    this.stripeGeo = null; this.carrierMode = 'vertex';
     for (const k of Object.keys(this.layers)) this._setLayer(k, null);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(c.V), 3));
@@ -171,9 +185,8 @@ export class View {
     this.colorAttr = new THREE.BufferAttribute(new Float32Array(c.n * 3).fill(0.85), 3);
     this.colorAttr.setUsage(THREE.DynamicDrawUsage);
     geo.setAttribute('color', this.colorAttr);
-    // polygon offset: the mesh lines and the probe draw on the surface without z-fighting, from either side
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide, flatShading: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
-    const mesh = new THREE.Mesh(geo, mat); mesh.userData.kind = 'carrier'; this._setLayer('field', mesh); this.mesh = mesh;
+    this.geoField = geo; this.matField = this._fieldMaterial(); this.matStripes = this._stripeMaterial();
+    const mesh = new THREE.Mesh(geo, this.matField); mesh.userData.kind = 'carrier'; this._setLayer('field', mesh); this.mesh = mesh;
     this._setLayer('wire', null); this._setLayer('probe', null);
     if (opts.keepCamera) { const d = c.bbox; for (const cam of [this.persp, this.ortho]) { cam.near = d * 0.01; cam.far = d * 20; cam.updateProjectionMatrix(); } }
     else this.fitCamera();
@@ -195,6 +208,79 @@ export class View {
   }
 
   setFlatColor(rgb) { if (!this.colorAttr) return; const a = this.colorAttr.array; for (let i = 0; i < a.length; i += 3) { a[i] = rgb[0]; a[i + 1] = rgb[1]; a[i + 2] = rgb[2]; } this.colorAttr.needsUpdate = true; }
+
+  // polygon offset on both carrier materials: the mesh lines and the probe draw on the surface without z-fighting
+  /** vertex colours mixed toward the plain mesh colour by uAlpha (the opacity slider): no recolouring per change */
+  _fieldMaterial() {
+    const u = { uAlpha: { value: this.fieldAlpha }, uBase: { value: cssRaw('--mesh', '#e0e0de') } };
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide, flatShading: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    mat.userData.u = u;
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, mat.userData.u);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <color_pars_fragment>', '#include <color_pars_fragment>\nuniform float uAlpha;\nuniform vec3 uBase;')
+        .replace('#include <color_fragment>', 'diffuseColor.rgb *= mix(uBase, vColor, uAlpha);');
+    };
+    return mat;
+  }
+  /** the three stripe families as bands where their laths would run (phase ≡ π), one colour and opacity per slot,
+   *  over the plain mesh colour; anti-aliased in screen space. Attribute ph: the three phases at each face corner. */
+  _stripeMaterial() {
+    const u = { uBase: { value: cssRaw('--mesh', '#e0e0de') }, uFam: { value: STRIPE_TOKENS.map(([n, f]) => cssLinear(n, f)) }, uA: { value: new THREE.Vector3(...this.stripeAlpha) }, uHW: { value: this.stripeHalfW } };
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    mat.userData.u = u;
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, mat.userData.u);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec3 ph;\nvarying vec3 vPh;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPh = ph;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vPh;\nuniform vec3 uBase;\nuniform vec3 uFam[3];\nuniform vec3 uA;\nuniform float uHW;')
+        .replace('#include <color_fragment>', [
+          'vec3 sc = uBase;',
+          'for (int k = 0; k < 3; k++) {',
+          '  float p = vPh[k], d = abs(mod(p, 6.2831853) - 3.1415927), aa = max(0.75 * fwidth(p), 1e-4);',
+          '  sc = mix(sc, uFam[k], uA[k] * (1.0 - smoothstep(uHW - aa, uHW + aa, d)));',
+          '}',
+          'diffuseColor.rgb *= sc;'].join('\n'));
+    };
+    return mat;
+  }
+  /** opacity of the carrier colours (field u, curvature, field 5/7) over the plain mesh colour, 0 … 1 */
+  setFieldAlpha(a) { this.fieldAlpha = a; if (this.matField) this.matField.userData.u.uAlpha.value = a; }
+  /** stripes: alpha = [red, yellow, blue] opacities 0 … 1; halfWidth = band half-width in radians of phase */
+  setStripeParams({ alpha, halfWidth } = {}) {
+    if (alpha) this.stripeAlpha = alpha.slice(0, 3);
+    if (halfWidth !== undefined) this.stripeHalfW = halfWidth;
+    if (this.matStripes) { const u = this.matStripes.userData.u; u.uA.value.set(...this.stripeAlpha); u.uHW.value = this.stripeHalfW; }
+  }
+  /** stripe phases per render face (stripes.js · stripeFaces: 9 per face of carrier.F, unwrapped within the face):
+   *  a non-indexed copy of the carrier with the phases at the face corners. Returns false if they do not fit. */
+  setStripes(phase) {
+    if (this.stripeGeo) { if (this.mesh && this.mesh.geometry === this.stripeGeo) this.mesh.geometry = this.geoField; this.stripeGeo.dispose(); this.stripeGeo = null; }
+    const c = this.carrier;
+    if (!c || !this.geoField || !phase || phase.length !== 3 * c.F.length) { if (this.carrierMode === 'stripes') this.setCarrierMode('vertex'); return false; }
+    const F = c.F, nf = F.length / 3, V = c.V, Nv = this.geoField.attributes.normal.array, pos = new Float32Array(9 * nf), nrm = new Float32Array(9 * nf);
+    for (let f = 0; f < nf; f++) for (let j = 0; j < 3; j++) {
+      const v = F[3 * f + j], o = 9 * f + 3 * j;
+      pos[o] = V[3 * v]; pos[o + 1] = V[3 * v + 1]; pos[o + 2] = V[3 * v + 2]; nrm[o] = Nv[3 * v]; nrm[o + 1] = Nv[3 * v + 1]; nrm[o + 2] = Nv[3 * v + 2];
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    g.setAttribute('ph', new THREE.BufferAttribute(phase instanceof Float32Array ? phase : Float32Array.from(phase), 3));
+    this.stripeGeo = g;
+    if (this.carrierMode === 'stripes' && this.mesh) this.mesh.geometry = g;
+    return true;
+  }
+  /** 'stripes' shows the stripe geometry (if set), anything else the vertex-coloured carrier; same mesh object, so
+   *  picking and the layer switch are unchanged (face order is the same in both geometries) */
+  setCarrierMode(mode) {
+    if (!this.mesh) return;
+    const stripes = mode === 'stripes' && !!this.stripeGeo;
+    this.carrierMode = stripes ? 'stripes' : 'vertex';
+    this.mesh.geometry = stripes ? this.stripeGeo : this.geoField;
+    this.mesh.material = stripes ? this.matStripes : this.matField;
+  }
 
   // --- labelled discs (sprites) ---------------------------------------------------------------------------------
   _labelTexture(text, fillHex) {
@@ -266,29 +352,6 @@ export class View {
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(segs, 3));
     this._setLayer('rosy', new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: this.colFg, transparent: true, opacity: 0.55 })));
   }
-  /** singularities of the rotation field as valence discs at face centroids: list [{pos:[x,y,z], valence}] */
-  setRosySingular(list) {
-    const c = this.carrier;
-    if (!c || !list || !list.length) { this._setLayer('rosysing', null); return; }
-    const g = new THREE.Group(), da = this.a || 8 * c.h;
-    for (const sg of list) {
-      const q = [sg.pos[0] + this.sideSign * 1.6 * c.h * sg.nrm[0], sg.pos[1] + this.sideSign * 1.6 * c.h * sg.nrm[1], sg.pos[2] + this.sideSign * 1.6 * c.h * sg.nrm[2]];
-      g.add(this._disc(String(sg.valence), valenceHex(sg.valence), q, Math.max(1.9 * c.h, 0.3 * da), { kind: 'rosy', valence: sg.valence }));
-    }
-    this._setLayer('rosysing', g);
-  }
-  /** branch points of the stripe phases (where a stripe family must end/start): small accent discs with ± */
-  setBranch(list) {
-    const c = this.carrier;
-    if (!c || !list || !list.length) { this._setLayer('branch', null); return; }
-    const g = new THREE.Group(), da = this.a || 8 * c.h;
-    for (const b of list) {
-      const q = [b.pos[0] + this.sideSign * 1.2 * c.h * b.nrm[0], b.pos[1] + this.sideSign * 1.2 * c.h * b.nrm[1], b.pos[2] + this.sideSign * 1.2 * c.h * b.nrm[2]];
-      g.add(this._disc(b.winding > 0 ? '+' : '−', '#' + this.colAccent.getHexString(), q, Math.max(1.4 * c.h, 0.2 * da), { kind: 'branch', family: b.family }));
-    }
-    this._setLayer('branch', g);
-  }
-
   /** larger disc with the lattice index on the selected peak (−1 clears) */
   setSelectedVertex(peak) {
     const c = this.carrier, lat = this.lat;

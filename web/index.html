@@ -201,8 +201,6 @@
         <button class="chip" data-layer="orient" title="a thin arrow at each regular site along the local wave vector (30° off the lattice edges); colour = misorientation to the neighbours (grains quiet, seams bright)">orient</button>
         <button class="chip" data-layer="strain" data-tip="tip-strain">strain</button>
         <button class="chip" data-layer="rosy" title="global mode: the three lattice directions of the smoothest 6-fold field at every carrier vertex">rotation field</button>
-        <button class="chip on" data-layer="rosysing" title="global mode: singularities of the rotation field (5 = index +1/6, 7 = −1/6) — the disclinations the curvature demands">field 5/7</button>
-        <button class="chip" data-layer="branch" title="global mode: branch points of the stripe phases (+/− winding) — where a stripe family must end or start = dislocations the geometry forces">branch points</button>
       </div>
       <div class="row" id="row-orient" hidden>
         <label>orient colour</label>
@@ -236,8 +234,19 @@
       </div>
       <div class="row">
         <label for="sel-carrier">carrier shows</label>
-        <select id="sel-carrier"><option value="u">field u</option><option value="K">Gaussian curvature</option><option value="Ks">smoothed curvature</option><option value="none">plain</option></select>
+        <select id="sel-carrier"><option value="u">field u</option><option value="K">Gaussian curvature</option><option value="Ks">smoothed curvature</option><option value="rosysing" title="global mode: singularities of the rotation field, 5 = index +1/6 red, 7 = −1/6 blue, spread like the smoothed curvature">field 5/7 (global)</option><option value="stripes" title="global mode: the three stripe phases of the seed in red, yellow and blue; a band that stops is a branch point">stripes, 3 phases (global)</option><option value="none">plain</option></select>
       </div>
+      <div class="row slider" id="row-carrier-alpha">
+        <label for="sl-carrier-alpha">colour opacity</label>
+        <input type="range" id="sl-carrier-alpha" min="0" max="1" step="0.01" value="1">
+        <output id="out-carrier-alpha" class="mono">100 %</output>
+      </div>
+      <div id="row-stripe-alpha" hidden>
+        <div class="row slider"><label for="sl-stripe-0"><span class="swatch" style="background: var(--fam-c)"></span>red stripes</label><input type="range" id="sl-stripe-0" min="0" max="1" step="0.01" value="1"><output id="out-stripe-0" class="mono">100 %</output></div>
+        <div class="row slider"><label for="sl-stripe-1"><span class="swatch" style="background: var(--fam-b)"></span>yellow stripes</label><input type="range" id="sl-stripe-1" min="0" max="1" step="0.01" value="1"><output id="out-stripe-1" class="mono">100 %</output></div>
+        <div class="row slider"><label for="sl-stripe-2"><span class="swatch" style="background: var(--fam-a)"></span>blue stripes</label><input type="range" id="sl-stripe-2" min="0" max="1" step="0.01" value="1"><output id="out-stripe-2" class="mono">100 %</output></div>
+      </div>
+      <div class="readout" id="ro-carrier-view" hidden></div>
       <div class="row slider">
         <label for="sl-turn">turntable [°/s]</label>
         <input type="range" id="sl-turn" min="1" max="60" step="1" value="12">
@@ -249,6 +258,11 @@
       <div class="readout" id="ro-strands"></div>
       </div>
     </details>
+
+    <!-- 6 Explain: not foldable, opens the equations page in a new tab (a running solve stays here) -->
+    <a class="sec-link" id="sec-explain" href="Tri-Weave-Lattice-Equations.html" target="_blank" rel="noopener" title="Tri-Weave Lattice Equations — opens in a new tab">
+      <span class="chev" aria-hidden="true"></span><h2>6 Explain</h2><span class="sum">how the solver works ↗</span>
+    </a>
     </div>
   </aside>
 
@@ -305,7 +319,9 @@
     around its two sites are larger; shorter means tighter. Edges are grouped by the family of laths that run parallel to them (A / B / C).</p>
   <div class="tip-key"><span class="lo">−<b data-tip-range>15</b> %</span><span class="bar"></span><span class="hi">+<b data-tip-range>15</b> %</span></div>
   <p class="dim">On the zoo cones the large values sit at the 5–7 pairs and along the rim (v3Cone_sharp: regular interior −0.2 ± 4.3 %);
-    on a dome they spread over the surface (v4Cone_round ± 6 %) — how far curvature squeezes the lattice before it inserts a 5–7 pair.</p>
+    on a dome they spread over the surface (v4Cone_round ± 6 %) — how far curvature squeezes the lattice before it inserts a 5–7 pair.
+    <a href="Tri-Weave-Lattice-Equations.html" target="_blank" rel="noopener">Tri-Weave-Lattice Explanation</a>
+  </p>
 </template>
 <script type="module" src="js/app.js"></script>
 </body>

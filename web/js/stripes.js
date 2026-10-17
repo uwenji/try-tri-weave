@@ -5,10 +5,11 @@
 // Energy Σ_edges w |ψ_j^(k') − R_ij ψ_i^(k)|² with R = rotation by the phase increment ω_ij = ∫ q0 n·dl (times a
 // conjugation when reversed), minimised under Σ m|ψ|² = 1 → smallest eigenvector, inverse iteration with Jacobi-PCG.
 // Branch points (faces around which a family's phase winds) are where the stripes must end or start: the dislocations
-// the geometry forces. u0 = ⅓ Σ_k Re ψ̂^(k) is a hexagonal initial condition for SH over the whole surface — no seed.
+// the geometry forces. u0 = ⅓ Σ_k Re ψ̂^(k) is a hexagonal initial condition for SH over the whole surface — no seed —
+// with the triad sign fixed in u0FromPsi (third moment Σ m u0³ < 0 → negate u0 and ψ).
 // The solve can run on the base carrier and be lifted to a refined one (liftStripes): ψ is a slow modulation of the
-// carrier wave, so transporting it across the fine edges reproduces it.
-import { csrFromCOO, pcg } from './sparse.js';
+// carrier wave, so transporting it across the fine edges reproduces it. stripeFaces prepares the phases for display.
+import { csrFromCOO, pcg, MinHeap } from './sparse.js';
 import { wrapPi, intrinsicFrames } from './rosy.js';
 
 const TWO_PI = 2 * Math.PI;
@@ -50,9 +51,26 @@ export function stripeCoupling(frames, theta, N, q0, lenOf, key) {
   };
 }
 
-export function u0FromPsi(psi, n) {
-  const u0 = new Float64Array(n);
-  for (let i = 0; i < n; i++) { let s = 0; for (let k = 0; k < 3; k++) { const re = psi[6 * i + 2 * k], im = psi[6 * i + 2 * k + 1], a = Math.hypot(re, im); s += a > 1e-12 ? re / a : 0; } u0[i] = s / 3; }
+/** Seed for SH: u0 = ⅓ Σ_k cos φ^(k) (the three stripe waves added). The stripe solve does not impose the triad
+ *  Φ = φ⁽⁰⁾ − φ⁽¹⁾ + φ⁽²⁾ ≡ 0; where it lands on Φ = π the sum is a honeycomb that SH23 (b > 0) erases. The third moment
+ *  Σ m u0³ is > 0 for the lattice and < 0 for the honeycomb; negating u0 and ψ adds π to every phase (Φ → Φ + π).
+ *  ψ is negated in place so that ψ and u0 stay consistent. m: lumped vertex areas (uniform weights if omitted). */
+export function u0FromPsi(psi, n, m = null) {                     // psi: 6 reals per vertex = (Re, Im) of ψ⁽⁰⁾, ψ⁽¹⁾, ψ⁽²⁾; m: vertex areas
+  const u0 = new Float64Array(n); let m3 = 0;
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let k = 0; k < 3; k++) {
+      const re = psi[6 * i + 2 * k], im = psi[6 * i + 2 * k + 1]; // ψᵢ⁽ᵏ⁾
+      const a = Math.hypot(re, im);                               // |ψᵢ⁽ᵏ⁾|
+      s += a > 1e-12 ? re / a : 0;                                // Re ψ̂ = cos φᵢ⁽ᵏ⁾
+    }
+    u0[i] = s / 3;                                                // average of the three
+    m3 += (m ? m[i] : 1) * u0[i] ** 3;                            // third moment: > 0 lattice, < 0 honeycomb
+  }
+  if (m3 < 0) {                                                   // Φ = π: negate, which adds π to every phase
+    for (let i = 0; i < n; i++) u0[i] = -u0[i];
+    for (let i = 0; i < 6 * n; i++) psi[i] = -psi[i];             // keep ψ consistent with u0
+  }
   return u0;
 }
 
@@ -70,6 +88,70 @@ export function branchPoints(Fi, edge, psi, reversed = false) {
       }
       if (!ok || k !== k0 || s !== 1) continue;
       const wnd = Math.round(sum / TWO_PI); if (wnd !== 0) out.push({ face: f, family: k0, winding: wnd });
+    }
+  }
+  return out;
+}
+
+/** vertex farthest (in edges) from all `sources` over the rings nb: the root of the colour walk in stripeFaces, so that
+ *  the seams start at the field singularities and run away from it */
+export function farthestVertex(nb, n, sources) {
+  if (!sources.length) return 0;
+  const dist = new Int32Array(n).fill(-1), queue = new Int32Array(n); let head = 0, tail = 0, last = sources[0];
+  for (const v of sources) if (v >= 0 && v < n && dist[v] < 0) { dist[v] = 0; queue[tail++] = v; }
+  while (head < tail) { const p = queue[head++]; last = p; for (const q of nb[p]) if (dist[q] < 0) { dist[q] = dist[p] + 1; queue[tail++] = q; } }
+  return last;
+}
+
+/** Stripe phases per render face for the view (view.js · setStripes). The three families get colour slots by a walk
+ *  outward from `root` in order of distance (Dijkstra over the intrinsic rings, 3-D edge lengths from V), carrying each
+ *  slot along the edge coupling (family k at p arrives as family k' at q, possibly reversed = conjugated). Around a field
+ *  5 or 7 no consistent labelling exists: the slots swap across a seam where the walk closes round the singularity
+ *  (the side away from the root). Each render face takes its slots from a corner that agrees with at least one other
+ *  corner (so a face on the seam goes with the side holding two of its corners), transports them to the other corners,
+ *  and unwraps the phases inside the face (expected increment ω plus the wrapped remainder) for linear interpolation.
+ *  F: render faces (carrier.F); nb: intrinsic rings; edge: stripeCoupling; psi: 6 reals per vertex; V: positions.
+ *  Returns Float32Array(9 nf): face f, corner j, slot s → 9f + 3j + s. */
+export function stripeFaces(F, n, nb, edge, psi, root = 0, V = null) {
+  const lab = new Int8Array(3 * n).fill(-1), sgn = new Int8Array(3 * n), dist = new Float64Array(n).fill(Infinity), heap = new MinHeap(1024);
+  const arg = (v, k) => Math.atan2(psi[6 * v + 2 * k + 1], psi[6 * v + 2 * k]);
+  const len = (p, q) => V ? Math.hypot(V[3 * q] - V[3 * p], V[3 * q + 1] - V[3 * p + 1], V[3 * q + 2] - V[3 * p + 2]) : 1;
+  const parent = new Int32Array(n).fill(-1), done = new Uint8Array(n);
+  const label = (p, q) => {                                            // slots of q carried from p; null if not a permutation
+    const kk = [0, 0, 0], ss = [1, 1, 1];
+    for (let s = 0; s < 3; s++) { const e = edge(p, q, lab[3 * p + s]); if (!e) return null; kk[s] = e.kp; ss[s] = e.rev ? -sgn[3 * p + s] : sgn[3 * p + s]; }
+    return kk[0] === kk[1] || kk[1] === kk[2] || kk[0] === kk[2] ? null : [kk, ss];
+  };
+  let next = 0, r0 = root >= 0 && root < n ? root : 0;
+  for (;;) {
+    lab[3 * r0] = 0; lab[3 * r0 + 1] = 1; lab[3 * r0 + 2] = 2; sgn[3 * r0] = sgn[3 * r0 + 1] = sgn[3 * r0 + 2] = 1; dist[r0] = 0; heap.push(0, r0);
+    while (heap.size) {
+      const [d, p] = heap.pop(); if (done[p] || d > dist[p]) continue;
+      if (parent[p] >= 0) { const L = label(parent[p], p); if (!L) { done[p] = 0; dist[p] = Infinity; continue; } for (let s = 0; s < 3; s++) { lab[3 * p + s] = L[0][s]; sgn[3 * p + s] = L[1][s]; } }
+      done[p] = 1;
+      for (const q of nb[p]) { if (done[q]) continue; const nd = d + len(p, q); if (nd < dist[q]) { dist[q] = nd; parent[q] = p; heap.push(nd, q); } }
+    }
+    while (next < n && done[next]) next++;
+    if (next >= n) break;
+    r0 = next; parent[r0] = -1;                                         // another component, or a vertex no neighbour could label
+  }
+  // does the walk's labelling at v agree with slot transport from u (all three slots, signs included)?
+  const agrees = (u, v) => { for (let s = 0; s < 3; s++) { const e = edge(u, v, lab[3 * u + s]); if (!e || e.kp !== lab[3 * v + s] || (e.rev ? -sgn[3 * u + s] : sgn[3 * u + s]) !== sgn[3 * v + s]) return false; } return true; };
+  const nf = F.length / 3, out = new Float32Array(9 * nf), cs = [0, 0, 0];
+  for (let f = 0; f < nf; f++) {
+    cs[0] = F[3 * f]; cs[1] = F[3 * f + 1]; cs[2] = F[3 * f + 2];
+    let j0 = 0; if (!agrees(cs[0], cs[1]) && !agrees(cs[0], cs[2]) && agrees(cs[1], cs[2])) j0 = 1;   // corner 0 alone on the other side of the seam
+    const a = cs[j0];
+    for (let s = 0; s < 3; s++) {
+      const k = lab[3 * a + s], sg = sgn[3 * a + s], pa = sg * arg(a, k);
+      for (let j = 0; j < 3; j++) {
+        if (j === j0) { out[9 * f + 3 * j + s] = pa; continue; }
+        const v = cs[j], e = edge(a, v, k);
+        let kv, sv, om = 0;
+        if (e) { kv = e.kp; sv = e.rev ? -sg : sg; om = sg * e.om; }
+        else { kv = lab[3 * v + s]; sv = sgn[3 * v + s]; }            // a render edge that is not intrinsic (flipped): the walk's slots at v
+        out[9 * f + 3 * j + s] = pa + om + wrapPi(sv * arg(v, kv) - pa - om);
+      }
     }
   }
   return out;
@@ -115,7 +197,7 @@ export function stripes(c, rosy, q0, { Len = null, outer = 12, cgTol = 1e-5, cgM
     lam = num; z = zn; if (log) log(`stripes it ${it}: λ = ${lam.toExponential(3)}, Δ = ${Math.sqrt(ch).toExponential(2)}`);
     if (it > 1 && Math.sqrt(ch) < 3e-4) break;
   }
-  return { psi: z, u0: u0FromPsi(z, n), branch: branchPoints(Fi, edge, z, !!rosy.reversed), iters, energy: lam, worstMatch: worst, edge };
+  return { psi: z, u0: u0FromPsi(z, n, m), branch: branchPoints(Fi, edge, z, !!rosy.reversed), iters, energy: lam, worstMatch: worst, edge };
 }
 
 /**
@@ -126,7 +208,7 @@ export function stripes(c, rosy, q0, { Len = null, outer = 12, cgTol = 1e-5, cgM
  */
 export function liftStripes(psiBase, nBase, cFine, thetaFine, framesFine, q0, N = 6, { sweeps = 2, reversed = false } = {}) {
   const { Fi, Li, n } = cFine;
-  const { lenOf, key } = meshData(Fi, Li, n);
+  const { lenOf, key, m: area } = meshData(Fi, Li, n);
   const edge = stripeCoupling(framesFine, thetaFine, N, q0, lenOf, key);
   const psi = new Float64Array(6 * n), done = new Uint8Array(n);
   psi.set(psiBase.subarray(0, 6 * nBase)); for (let i = 0; i < nBase; i++) done[i] = 1;
@@ -155,5 +237,5 @@ export function liftStripes(psiBase, nBase, cFine, thetaFine, framesFine, q0, N 
     for (let m = nBase; m < n; m++) { const v = assign(m, false); if (v) np.set(v, 6 * m); }
     psi.set(np);
   }
-  return { psi, u0: u0FromPsi(psi, n), branch: branchPoints(Fi, edge, psi, reversed), edge };
+  return { psi, u0: u0FromPsi(psi, n, area), branch: branchPoints(Fi, edge, psi, reversed), edge };
 }

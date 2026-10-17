@@ -14,7 +14,8 @@ Python app. `HOW_TO_START.md` is the short version of this file.
 localize/
 ├─ export_carrier.py          Python: zoo .stl → web/carriers/*.lshc + web/manifest.json (remesh + intrinsic Delaunay)
 └─ web/
-   ├─ index.html              the page (complete document, for local use)
+   ├─ index.html              the page (complete document)
+   ├─ Tri-Weave-Lattice-Equations.html  the equations page, self-contained (left bar → 6 Explain; ← TryTriWeave goes back)
    ├─ artifact.html           the same page without the <html>/<head>/<body> wrapper — what gets published; made by build_artifact.py
    ├─ style.css               theme tokens (light/dark, WeaveSim idiom) and the layout
    ├─ manifest.json           list of carriers {name, file, n, omega_deg, chi, bbox, h, a_default}
@@ -41,12 +42,18 @@ localize/
    └─ test_gpu.html           CPU vs GPU solver on one seed (open it in the served page)
 ```
 
+GitHub (`TryTriWeave/web/`, served by GitHub Pages) gets the page and what it loads: `index.html`, `style.css`,
+`manifest.json`, `Tri-Weave-Lattice-Equations.html`, `carriers/`, `js/`, `vendor/`, plus `serve.py` and the two `.md`
+files. `artifact.html`, `build_artifact.py`, `manifest_artifact.json`, `calibrate.js`, the `test_*` files and
+`localsh-selfsigned.pem` (serve.py's private key) stay here.
+
 ## Running
 
 Local: `python serve.py` from `web/` (any static server works, e.g. `python -m http.server 8080`), then
 <http://localhost:8080/>; `index.html#v4Cone_sharp` opens on a given surface. `serve.py` also prints the LAN URL
 for other devices on the same Wi-Fi and has `--https` (self-signed certificate) because WebGPU needs a secure
-context on anything but localhost. Online: the published artifact (private until shared).
+context on anything but localhost. Online: GitHub Pages, <https://uwenji.github.io/try-tri-weave/web/>
+(repo `uwenji/try-tri-weave`, local clone `TryTriWeave`).
 
 Browsers: WebGPU is in Chrome/Edge 113+ (desktop, Android), Safari 26+ (macOS 26 / iOS 26) and recent
 Firefox on Windows; elsewhere the page falls back to the CPU solver and says so in the status pill. WebGL 2 is
@@ -68,7 +75,7 @@ with a click on their header; a folded header still shows its key value (surface
 | 3 Singularity | number line (valence n · charge 6 − n · cone angle n·60°, detected Ω as a marker) · `valence at the centre` · `Use detected` · click on the surface · seed kind / radius (+ critical radius) / rotation | Ω = Σ K over interior vertices → charge round(Ω/60°) → valence 6 − charge; centre = maximum of the heat-smoothed curvature (flat surfaces: point farthest from the boundary); any change re-seeds. R_c = D / v at the current (r, b): a seed patch smaller than that shrinks |
 | 4 Solve | `steps` (scrub, up to 20 000) · Run / +500 / Re-seed / Export lattice · (r, b) map · `r` `b` · front readout · `dt` ⓘ + dt graph · max steps · per frame · CG iterations | the field is kept when r, b, dt change (operator rebuilt); snapshots every ~20 steps make the slider scrub backwards; export = the dual triangulation as OBJ text (copy; download only works outside the artifact viewer). The (r, b) map is the measured front speed (hatched: the seed dies; tan: pinned; blue: advances, iso-lines 0.25/0.5/0.75/1 a per 100 steps; above r = 0 the zero state is unstable); drag the dot to set r and b, the diamond to set the anneal point. The dt graph: steps to cover the surface against how much the time step slows the front |
 | 4 · anneal | `anneal after growth` · r₂ b₂ · switch when the front stops / at step N | two-stage schedule: grow at (r, b), then, once the peak count has stopped growing (3 read-outs) or at step N, continue with the same field at (r₂, b₂) nearer the hexagon saddle-node (default −0.027, 0.69 ≡ a k⁶-stiffened operator at the original parameters): dislocation dipoles annihilate 4–8× faster, the front is 3–4× slower. Removes isolated extra 5–7 pairs; holonomy seams (grain boundaries between fronts that met) stay. The strip tints the anneal stage; the r/b sliders drive the anneal stage while it runs; Re-seed restores (r, b) |
-| 5 View & readouts | theme auto/light/dark · chips field · mesh (intrinsic) · scale a · lattice · peaks · singular · centre · laths · **orient** (a thin flat arrow at every regular site, in the tangent plane, along the local wave vector of the pattern — perpendicular to one family of lattice edges, 30° off the lattice directions, so it never hides under a lattice line; a direction of the lattice is only defined mod 60°, so the arrows are chosen consistently by transport outward from the site nearest the centre — parallel inside a grain, with one unavoidable 60° cut around a disclination; colour = misorientation to the neighbours after transport over one edge — the lattice-line colour in a grain, amber → red along seams — or `angle θ`, θ mod 60° against the projected global x in cyclic colours; coherence |⟨e^{6iθ}⟩| in the readout) · **strain** (lattice edges as bars coloured cool–warm by ℓ / a − 1, all or one lath family A/B/C, ± range; hover the chip or the ⓘ for the diagram: an edge of family A is twice the A-lath segment beside it, so ℓ > a means longer segments between crossings and larger hexagonal openings) · one chip per singular valence · `lath width [a]` · lath colouring · over/under · `weave side` (along the normals / flipped) · carrier shows (u / Gaussian curvature / smoothed / plain) · `turntable [°/s]` | singular vertices as discs with the valence digit (Paul Tol *light* fills: v3 orange, v4 yellow, v5 pink, v7 blue, v8 cyan, v9 mint); valence histogram of the *interior* peaks, Σ(6−n) vs Ω/60°, strands, knots, parity and colour conflicts |
+| 5 View & readouts | theme auto/light/dark · chips field · mesh (intrinsic) · scale a · lattice · peaks · singular · centre · laths · **orient** (a thin flat arrow at every regular site, in the tangent plane, along the local wave vector of the pattern — perpendicular to one family of lattice edges, 30° off the lattice directions, so it never hides under a lattice line; a direction of the lattice is only defined mod 60°, so the arrows are chosen consistently by transport outward from the site nearest the centre — parallel inside a grain, with one unavoidable 60° cut around a disclination; colour = misorientation to the neighbours after transport over one edge — the lattice-line colour in a grain, amber → red along seams — or `angle θ`, θ mod 60° against the projected global x in cyclic colours; coherence |⟨e^{6iθ}⟩| in the readout) · **strain** (lattice edges as bars coloured cool–warm by ℓ / a − 1, all or one lath family A/B/C, ± range; hover the chip or the ⓘ for the diagram: an edge of family A is twice the A-lath segment beside it, so ℓ > a means longer segments between crossings and larger hexagonal openings) · one chip per singular valence · `lath width [a]` · lath colouring · over/under · `weave side` (along the normals / flipped) · carrier shows (u / Gaussian curvature / smoothed / field 5/7 / stripes, 3 phases / plain) with `colour opacity` toward the plain mesh colour (stripes: one slider each for red, yellow, blue) · `turntable [°/s]` | singular vertices as discs with the valence digit (Paul Tol *light* fills: v3 orange, v4 yellow, v5 pink, v7 blue, v8 cyan, v9 mint); valence histogram of the *interior* peaks, Σ(6−n) vs Ω/60°, strands, knots, parity and colour conflicts |
 | selection | click a lath → its path is highlighted (others dimmed, dark centreline), readout family / knots / over-under / open-closed; click a disc or peak → selected vertex with its lattice index in a larger disc; Esc clears; Shift-click or `Pick centre on surface…` moves the seed centre | selections are remembered by carrier vertex ids, so they survive the re-extraction that happens while the lattice grows |
 | growth strip | click / drag scrubs the step | peaks · interior · singular against the step; the step where "singular" leaves 1 is where the surface stops being ideal for that lattice |
 | view cube (top right of the view) | click a face / edge / corner · drag the cube · ▲▼◀▶ · ⌂ home · ⤢ fit · ⟳ turntable · ▱ perspective/orthographic · keys H F T P | the cube mirrors the camera (z up: FRONT faces −y, RIGHT +x, TOP +z); a click turns the view to look along that facet, animated; the arrows roll the model by 90° (▲ shows the face below, ◀ brings the right face to the front); the turntable spins the view about the vertical axis at the speed set in section 5 and pauses while you drag; projection switches keep the apparent size |
@@ -189,8 +196,9 @@ of conflicts is unavoidable — the panel shows the count rather than hiding it.
 * A surface is missing from the list: it is not in `manifest.json`; run `python ../export_carrier.py <name>`.
 * `export_carrier.py` fails on import: run it inside the `weavesim` env with `gpytoolbox` and `potpourri3d`
   installed; it imports `../carrier.py` and `../localize_sh_app.py` (for the synthetic cones).
-* Republishing: `python build_artifact.py`, then publish `artifact.html` with `style.css`, `js/`, `vendor/`,
-  `manifest_artifact.json` as `manifest.json`, and each `carriers/X.lshc` as `carriers/X.wasm`.
+* Publishing: copy the GitHub set (section Folder) into `TryTriWeave/web/`, commit and push; Pages serves it as is.
+  The Claude artifact route still works: `python build_artifact.py`, then publish `artifact.html` with `style.css`,
+  `js/`, `vendor/`, `manifest_artifact.json` as `manifest.json`, and each `carriers/X.lshc` as `carriers/X.wasm`.
 
 ## Global mode — no seed (2026-10-15)
 Section 3 → `seed: global rotation field`. `js/rosy.js` solves the globally smoothest 6-fold direction field on the carrier
@@ -198,7 +206,7 @@ Section 3 → `seed: global rotation field`. `js/rosy.js` solves the globally sm
 5s/7s the curvature demands (treeBig: exactly 30 sevens, six per fillet, twelve at the junction). `js/stripes.js` integrates the
 three stripe phases along it as one rank-3 bundle (Knöppel et al. 2015; families permute around singularities, conjugated when
 reversed); its branch points are the dislocations the geometry forces; u0 = ⅓ Σ Re ψ̂ is the hexagonal initial field everywhere.
-Layers: `rotation field`, `field 5/7`, `branch points`. Headless: `node test_rosy.mjs treeBig`, `node test_global.mjs treeBig 2500 1 321.2`
+Layer: `rotation field`. `carrier shows` → `field 5/7`: the field's singular faces as charges, red = 5, blue = 7, each a Gaussian of the geodesic distance (σ = 0.8 a, full colour at the face); → `stripes, 3 phases`: the seed's three stripe phases (before SH) as red / yellow / blue bands where each family's laths would run (band = lath width, phase ≡ π), one opacity per family; a band that stops is a branch point, two families stopping together make a 5–7; around a field 5/7 the colours swap across a seam (no consistent labelling exists there). Per-face phases come from `stripes.js · stripeFaces` in the worker. Headless: `node test_rosy.mjs treeBig`, `node test_global.mjs treeBig 2500 1 321.2`
 (treeBig ×2 at 558 sites → {5:2, 6:469, 7:28, 8:2}, Σ(6−n) = −30). Not yet: the size-field metric ĝ for the field and the stripes
 (closed surfaces with spread curvature, e.g. the torus, still get 5–7 rows), and a Worker for the two solves (CPU, 10–40 s at ×2).
 `cb-disp` (section 2): the solvers now correct q0 for the carrier's dispersion (edge = a; see `test_dispersion.mjs`, `test_calibrate.mjs`).
