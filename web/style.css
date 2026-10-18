@@ -102,6 +102,18 @@ select { max-width: 230px; }
 .btn:focus-visible, .chip:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.file { position: relative; }
+.btn.sm { padding: 2px 8px; font-size: 12px; }
+select.up { width: 52px; }
+.btn[disabled] { opacity: 0.5; cursor: default; border-color: var(--border); }
+.row.import { flex-wrap: nowrap; }
+.row.import progress { flex: 1 1 auto; min-width: 60px; height: 8px; accent-color: var(--accent); }
+.row.import .hint { flex: 0 1 auto; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 55%; }
+details.sub { margin: 4px 0 2px; }
+details.sub > summary { cursor: pointer; color: var(--dim); font-size: 12px; list-style: none; user-select: none; }
+details.sub > summary::-webkit-details-marker { display: none; }
+details.sub > summary::before { content: '▸ '; }
+details.sub[open] > summary::before { content: '▾ '; }
+details.sub .row label { font-size: 12.5px; }
 .hint { color: var(--dim); font-size: 12px; margin: 4px 0 0; }
 .readout { color: var(--dim); font-size: 12px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
 .readout.inline { display: inline; margin: 0; }

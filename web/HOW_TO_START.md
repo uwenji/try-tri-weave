@@ -46,7 +46,7 @@ and accept the certificate warning on the device the first time.
    Shift-click the surface (or `Pick centre on surface…`, then click) to move the centre; `Use detected` goes back.
 4. **Solve** — the solver controls sit at the top of the left bar, right under the growth strip, so they are
    always in reach: drag `steps` (up to 20 000) left to scrub back in time, right to compute further; `Run` keeps
-   going, `+500` adds a batch, `Re-seed` and `Export lattice`; `max steps` and `per frame` below them. Section 4
+   going, `+500` adds a batch, `Re-seed` (`Export lattice` is in `1 File`); `max steps` and `per frame` below them. Section 4
    holds the pattern parameters: `r`, `b`, `dt` change the equation without resetting the field.
 5. **Display** (the sidebar beside the view) — `theme` auto / light / dark. Chips toggle layers: `field · mesh · lattice ·
    peaks · singular · centre · laths`; the `singular` row has one chip per valence present (v3, v5, v7 …, with counts) so
@@ -97,11 +97,18 @@ What "ideal" looks like: exactly one singular peak and Σ(6−n) = round(Ω/60°
 
 ## Add a surface
 
-* Quick: drop an `.stl` on the view (welded, Loop-subdivided and Delaunay-flipped in the browser; not remeshed,
-  the panel says so).
-* Proper: put the file in `../model/zoo/` and run `python ../export_carrier.py name` in the `weavesim` env
-  (needs `pip install gpytoolbox potpourri3d`). This remeshes it like the Python app, writes
-  `carriers/name.lshc` and adds it to `manifest.json`. Reload the page.
+* In the page (online too): `Open mesh…` in `1 File`, or drop the file anywhere on the page. STL, OBJ, PLY and OFF are
+  read, repaired and remeshed in the browser, in a background worker — nothing is uploaded. About 1 s for a zoo model,
+  5 s for a 350 k-triangle scan. The repairs (cracks closed, caps stripped, holes filled, non-manifold parts split…) are
+  listed in the card of the `1 File` mark. `up` (beside `Open mesh…`) says which axis of the file points up: `z` for Rhino
+  and most CAD, `y` for most web models (glTF, Blender, Sketchfab); changing it turns the opened model at once (no
+  remesh) and is kept for the next file. `import options`: `edges / bbox` (120 → h = bbox/120, as export_carrier.py),
+  `max v` (26 000; h is coarsened to fit), `crease °` (40: sharper edges are kept as feature lines), `strip planar caps`;
+  `Remesh again` reruns the last file with them. `Download .lshc` saves the carrier; dropping that file later loads it
+  without the remesh.
+* Into the zoo list: put the file in `../model/zoo/` and run `python ../export_carrier.py name` in the `weavesim` env
+  (needs `pip install gpytoolbox potpourri3d`). This writes `carriers/name.lshc` and adds it to `manifest.json`.
+  Reload the page. (A downloaded `.lshc` copied into `carriers/` and added to `manifest.json` works the same.)
 
 ## Update the online version
 

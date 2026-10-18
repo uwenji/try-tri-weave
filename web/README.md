@@ -23,7 +23,12 @@ localize/
    ├─ carriers/*.lshc         prepared carriers (binary, ~0.6–1.5 MB each)
    ├─ js/
    │  ├─ app.js               state, UI bindings, frame loop, export
-   │  ├─ carrier.js           .lshc loader, STL/weld/orient/Loop/Delaunay for dropped files, Laplacian, heat solves, detection, log map, seed
+   │  ├─ carrier.js           .lshc loader, intrinsic Delaunay flips, Laplacian, heat solves, detection, log map, seed
+   │  ├─ meshio.js            readers for STL (binary / ASCII), OBJ, PLY (ASCII / binary), OFF; the .lshc writer
+   │  ├─ meshrepair.js        weld, duplicate faces, T-junction cracks, orientation, non-manifold edges / vertices, loose parts, planar caps, small holes
+   │  ├─ remesh.js            isotropic remesher (Botsch–Kobbelt on a corner table, feature lines and fixed points, AABB-tree projection)
+   │  ├─ import_pipeline.js   file → carrier data: the export_carrier.py pipeline in JavaScript
+   │  ├─ import_worker.js     runs import_pipeline.js off the main thread
    │  ├─ sparse.js            CSR, SpMV, Jacobi-PCG, binary heap, Dijkstra
    │  ├─ solver_gpu.js        SH23 stepping in WGSL compute (Jacobi-PCG, scalars on the GPU)
    │  ├─ solver_cpu.js        the same stepping in typed arrays (fallback and reference)
@@ -37,6 +42,7 @@ localize/
    ├─ serve.py                http / https server that also prints the LAN URL for other devices
    ├─ build_artifact.py       index.html → artifact.html
    ├─ test_node.mjs           carrier → detect → seed → CPU solver → lattice → strands, from the terminal
+   ├─ test_import.mjs         the browser import on mesh files, beside the Python carriers
    ├─ test_predict.mjs        tracked read-outs against the growth prediction
    ├─ test_strands.mjs        strand tracing and colouring on a perfect flat lattice
    └─ test_gpu.html           CPU vs GPU solver on one seed (open it in the served page)
@@ -84,10 +90,10 @@ vertex reports in the status bar; the valence chips in Display show the counts).
 
 | section | controls | what happens |
 |---|---|---|
-| 1 File | zoo list · status mark · Open STL… / drop | loads a prepared carrier (or builds one from an STL in the browser: weld, orient, Loop-subdivide to h, Delaunay flips — no remesher), shows vertices, h, min angle, flips, notes |
+| 1 File | zoo list · status mark · Open mesh… / drop anywhere · `up` axis of the file (z / y / −y / x / −x / −z) · Export lattice (the dual triangulation as OBJ text: copy, or download outside the artifact viewer) · import options (edges / bbox, max v, crease °, strip planar caps) · Remesh again · Download .lshc | loads a prepared carrier, or imports a mesh (.stl .obj .ply .off) in a worker: repair, isotropic remesh, intrinsic Delaunay — the same pipeline as `export_carrier.py` (see *Opening your own mesh*); a dropped `.lshc` loads as it is. The card shows vertices, h, min angle, flips, the repairs made |
 | 2 Density | `lattice edge a` (log) with its status mark (the live diagram is in its card) · `≈ sites` · q0 · `correct q0` · `carrier ×1 ×2 ×4 ×8` ⓘ | re-seeds at the new spacing; the diagram draws a, the lath pitch p = √3⁄2·a, the lath width and the carrier mesh at the true ratio (one tick per carrier edge along a), with sites = area / (√3⁄2·a²) worked out and a gauge of carrier edges per a (6–12 green). The slider spans 6…14 carrier edges per a, so a denser lattice needs a finer carrier: the × chips subdivide the exported carrier in the browser (see *Density* below). `intrinsic mesh` draws the intrinsic Delaunay triangulation the solver uses (flipped edges traced as geodesics across the faces, in the accent colour); `scale a` draws the seed's first ring at the centre (n sites at distance a, spokes, circle ρ = a) |
-| solver strip (pinned) | legend · fold chevron · status mark · growth chart · `steps` (scrub, up to 20 000) · Run / +500 / Re-seed / Export lattice · max steps · per frame | snapshots every ~20 steps make the slider scrub backwards; export = the dual triangulation as OBJ text (copy; download only works outside the artifact viewer) |
-| 3 Singularity | `seed` local / global rotation field · local: `valence at the centre` · `Use detected` · click on the surface · seed kind / radius (+ critical radius) / rotation · global: `size field ĝ` (cones from the curvature / the field's own 5/7s / uniform a) · Solve rotation field + seed | Ω = Σ K over interior vertices → charge round(Ω/60°) → valence 6 − charge; centre = maximum of the heat-smoothed curvature (flat surfaces: point farthest from the boundary); any change re-seeds. R_c = D / v at the current (r, b): a seed patch smaller than that shrinks. Global mode: see *Global mode* below |
+| solver strip (pinned) | legend · fold chevron · status mark · growth chart · `steps` (scrub, up to 20 000) · Run / +500 / Re-seed · max steps · per frame | snapshots every ~20 steps make the slider scrub backwards |
+| 3 Singularity | `seed` local / global rotation field · local: `valence at the centre` · `Use detected` · click on the surface · seed kind / radius (+ critical radius) / rotation · global: `size field ĝ` (cones from the curvature / uniform a) · Solve rotation field + seed | Ω = Σ K over interior vertices → charge round(Ω/60°) → valence 6 − charge; centre = maximum of the heat-smoothed curvature (flat surfaces: point farthest from the boundary); any change re-seeds. R_c = D / v at the current (r, b): a seed patch smaller than that shrinks. Global mode: see *Global mode* below |
 | 4 Solve | (r, b) map · `r` `b` · front readout · `dt` ⓘ + dt graph · CG iterations | the field is kept when r, b, dt change (operator rebuilt). The (r, b) map is the measured front speed (hatched: the seed dies; tan: pinned; blue: advances, iso-lines 0.25/0.5/0.75/1 a per 100 steps; above r = 0 the zero state is unstable); drag the dot to set r and b, the diamond to set the anneal point. The dt graph: steps to cover the surface against how much the time step slows the front |
 | 4 · heal | `Heal 5-7-5` · `pin what will not hold` · `Clear pins` · status mark (the report) | takes the bound 5–7 pairs apart inside the solver (see *Healing bound pairs* below): 5-7-5 → one 5, 7-5-7 → one 7, wrong diagonals flipped; each kick is held for 60 steps and tested over 400 free steps, kept only if the defects around it went down; a kick that does not hold can be pinned (kept applied after every batch) |
 | 4 · anneal | `anneal after growth` · status mark · r₂ b₂ · switch when the front stops / at step N | two-stage schedule: grow at (r, b), then, once the peak count has stopped growing (3 read-outs) or at step N, continue with the same field at (r₂, b₂) nearer the hexagon saddle-node (default −0.027, 0.69 ≡ a k⁶-stiffened operator at the original parameters): dislocation dipoles annihilate 4–8× faster, the front is 3–4× slower. Removes isolated extra 5–7 pairs; holonomy seams (grain boundaries between fronts that met) stay. The strip tints the anneal stage; the r/b sliders drive the anneal stage while it runs; Re-seed restores (r, b) |
@@ -115,8 +121,8 @@ the button's text, or a `<template>` named by `data-tip` — the strain diagram 
 
 ## How it works
 
-**Carriers.** The zoo STLs are Rhino NURBS meshes (fans, slivers, no interior vertices). Remeshing has no
-JavaScript implementation, so it stays in Python: `export_carrier.py` runs the pipeline of `../carrier.py`
+**Carriers.** The zoo STLs are Rhino NURBS meshes (fans, slivers, no interior vertices). The zoo carriers are made in
+Python (an opened mesh goes through the JavaScript port of the same pipeline, see *Opening your own mesh*): `export_carrier.py` runs the pipeline of `../carrier.py`
 (strip the flat cap of closed cones, isotropic remesh to h = bbox/120 with the boundary turned into a crease and
 the apex snapped back, intrinsic Delaunay flips) and writes `.lshc`: vertices, extrinsic faces (for rendering and
 picking), intrinsic faces and lengths (for the operators), angle defects, boundary flags. The page rebuilds the
@@ -198,6 +204,7 @@ of conflicts is unavoidable — the panel shows the count rather than hiding it.
 ## Tests
 
     node test_node.mjs v5Cone_sharp 3000 [valence] [a]   # whole pipeline from the terminal (Node ≥ 20)
+    node test_import.mjs ../../model/zoo/goose.stl       # the browser import on a mesh file, beside carriers/goose.lshc
     node test_sizefield.mjs v4Cone_round 4000 4          # uniform a vs conformal size field, strain per family, orientation coherence
     node test_predict.mjs v3Cone_sharp 2400              # tracked peaks / interior / singular against the growth prediction
     node test_strands.mjs                                # strands on a perfect flat lattice: straight, 0 conflicts
@@ -209,7 +216,10 @@ of conflicts is unavoidable — the panel shows the count rather than hiding it.
 * Pill says `CPU (JS)`: no WebGPU in this browser; everything works, 100–300 steps/s instead of thousands.
   In Chrome check `chrome://gpu` → WebGPU; in Safari it is on by default from Safari 26.
 * Slow with WebGPU: raise `per frame` (Solve) — batches are capped by that number.
-* A surface is missing from the list: it is not in `manifest.json`; run `python ../export_carrier.py <name>`.
+* A surface is missing from the list: open the mesh (`Open mesh…` or drop it), or add it to `manifest.json` with
+  `python ../export_carrier.py <name>`.
+* An import fails or looks wrong: the card of the `1 File` mark lists the repairs; a point cloud, a mesh without faces
+  or a NURBS file (.3dm, .step) cannot be read — export a mesh (STL / OBJ / PLY) from the modeller.
 * `export_carrier.py` fails on import: run it inside the `weavesim` env with `gpytoolbox` and `potpourri3d`
   installed; it imports `../carrier.py` and `../localize_sh_app.py` (for the synthetic cones).
 * Publishing: copy the GitHub set (section Folder) into `TryTriWeave/web/`, commit and push; Pages serves it as is.
@@ -240,8 +250,7 @@ along a tour of a-sized cells — the residual charge runs up cell by cell and e
 round(charge/60°) (valence 5/4/3 or 7/8/9) is placed in the cell that contributed most; a closed surface ends with 6χ net;
 five rounds of Lloyd relaxation then move each cone to the centroid of the curvature it stands for, and each cone is
 smeared over a/2 along the curvature of its own sign (an apex keeps its cone, a dome spreads it), with φ normalised so the
-site count equals that of uniform a. `the field's own 5/7s`: the smoothest field's singular faces as cones. `uniform a`: no
-size field (the old behaviour).
+site count equals that of uniform a. `uniform a`: no size field (the old behaviour).
 Read-outs: the cones and their net charge, the model edge a·e^{−φ} (p5–p95), the share of ĝ edges longer than a/6 (refine when
 it exceeds a few %), and the branch points of the ĝ stripes — the test of step 3: on the domes they go from 25 to 0.
 `carrier shows` → `lattice edge a·e^{−φ}` draws the size field (red tighter, blue wider); `field 5/7` and `stripes` now also
@@ -284,3 +293,38 @@ Measured at ×2 with the uniform global seed, 3000 steps: Bunny (a 8.1, r −0.1
 `node test_heal.mjs Bunny 8.1 1 3000 -0.110 1.44` (the field after the growth is cached in `heal_<name>_<level>_<steps>.json`).
 Also in this version: the pump yields through a MessageChannel in a hidden tab (Chrome throttles timers there to 1 Hz,
 1/min after five minutes), and starts as soon as the target changes or a seed arrives instead of waiting for the tick.
+
+## Opening your own mesh (2026-10-19)
+`Open mesh…` (or a drop anywhere on the page) runs the whole `export_carrier.py` pipeline in a module worker, so the GitHub
+Pages site takes a user's model without Python and without uploading it anywhere:
+1. **read** (`meshio.js`) — STL binary / ASCII, OBJ (polygons fanned, negative indices), PLY ASCII / binary (any vertex
+   properties, list faces), OFF. A `.lshc` is loaded directly. `up` turns the file's up axis onto +z with a proper rotation
+   (y-up: (x, y, z) → (x, −z, y), the glTF / Blender convention, front kept); changing `up` while an opened model is shown
+   rotates the carrier itself (`UP_ROT`, `upChange` in `import_pipeline.js`) — the remesh does not depend on the
+   orientation — and the choice is stored in the carrier's meta (`options.up`) and in the browser for the next file.
+2. **repair** (`meshrepair.js`) — weld (1e-6 of the bbox, hashed), drop degenerate and duplicate faces, close T-junction
+   cracks (`repair_cracks`), orient consistently (BFS; a Möbius-like conflict is cut), cut edges with more than two faces
+   and split vertices whose corners form more than one fan, so the corner table is a manifold; drop loose parts smaller
+   than 4 h²; strip planar caps (`strip_planar_caps`, not when the flat part is most of the model, e.g. a box); fill
+   boundary loops shorter than 3 h (`fill_small_holes`).
+3. **remesh** (`remesh.js`) — Botsch–Kobbelt at h = bbox/120 (`edges / bbox`), 10 iterations of split > 4⁄3 h, collapse
+   < 4⁄5 h, valence flips (squared deviation from 6, 4 on the boundary, the angle-sum valence at fixed points),
+   tangential relaxation and projection onto the input through an AABB tree (a vertex only takes a triangle facing its
+   own side, so thin parts do not merge). The boundary and creases (dihedral > 40°) are feature lines: their vertices
+   slide along the line and are projected onto it; line ends, junctions, corners (turning > 45° over h/2) and apices
+   (|K| > 20°, the cone tips) are fixed. Two fixed points closer than h/2 merge. h is coarsened for the vertex cap
+   (26 000) from the area (n ≈ 1.2 A/h²) before the remesh, and again if the result is still over.
+4. **carrier** — centre, outward side (`orientSide`), angle defects, intrinsic Delaunay flips (`flipToDelaunay`), the
+   same meta as the Python export (χ, ∫K, h, min angle, skinny %, notes). `Download .lshc` writes it in the carriers/
+   format.
+
+Against the Python carriers (same h, all 19 zoo STLs, `node test_import.mjs …`): χ identical everywhere, ∫K within 1°,
+area within 0.03 %; 3–13 % fewer vertices (the mean edge lands on h); minimum angle 22–30° on the CAD meshes where
+gpytoolbox leaves 1–12° slivers at the snapped apex and along the rim (v4Cone_sharp 22° vs 2.8°, saddle2 30.5° vs 0.9°,
+developableSrf1 23.5° vs 1.5°), 11–14° on the scanned Bunny and the creased goose (Python 6.9° and 2.1°), slightly lower
+on the smooth genus 2 / 3 (28° vs 33° / 29°). Time in Node: 0.5–1.6 s per zoo model, 3.3 s for tree (38 k vertices),
+5.7 s for Armadillo (346 k triangles), 11 s for treeBig (290 MB ASCII STL).
+The lattice does not tell the two carriers apart. Global SH on 10 zoo shapes, Python carrier vs browser carrier at the same a
+(bench of `Tri-Weave-Lattice-Equations.html`, CPU, non-6 vertices): v4Cone_sharp 2 / 1, v3Cone_sharp 4 / 8, v3Cone_round 3 / 3,
+v5Cone_sharp 1 / 1, v4Cone_round 9 / 9, saddle1 1 / 1, Tube 0 / 0, torus 24 / 18, genus 2 38 / 39, Bunny 45 / 40 — 127 / 120 in
+all; the spread of the lattice edge (CV 0.05–0.11) is the same on both.

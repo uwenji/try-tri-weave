@@ -1,6 +1,7 @@
-// Carrier mesh for the browser: loads prepared .lshc carriers (remeshed + intrinsic Delaunay in Python), or builds
-// a carrier from a dropped STL (weld, orient, Loop subdivision, intrinsic Delaunay flips — no remesher here), then
-// cotan Laplacian / mass / defects, singularity detection, heat-method distance and the n-fold lattice seed.
+// Carrier mesh for the browser: loads prepared .lshc carriers (remeshed + intrinsic Delaunay in Python, or in the
+// browser by import_pipeline.js for an opened mesh), then cotan Laplacian / mass / defects, singularity detection,
+// heat-method distance and the n-fold lattice seed. (Carrier.fromMesh, weld → Loop subdivision → flips, is the old
+// quick path without a remesher; the page now imports through import_worker.js.)
 import { csrFromCOO, spmv, csrDiagonal, pcg, dijkstra } from './sparse.js';
 import { conformalLengths, smearWeights } from './cones.js';
 

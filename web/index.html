@@ -59,12 +59,37 @@
         <button class="info stat" id="i-file" type="button" data-src="ro-carrier ro-notes">i</button>
       </div>
       <div class="row">
-        <label class="btn file"><input type="file" id="file-stl" accept=".stl,.obj" hidden>Open STL…</label>
-        <span class="hint">or drop an .stl on the view</span>
+        <label class="btn file" title="STL, OBJ, PLY or OFF: repaired and remeshed in the browser (nothing is uploaded). A .lshc carrier loads as it is."><input type="file" id="file-stl" accept=".stl,.obj,.ply,.off,.lshc" hidden>Open mesh…</label>
+        <label for="sel-imp-up" title="which axis of the file points up: z for Rhino and most CAD, y for most web models (glTF, Blender, Sketchfab, many OBJ / STL downloads). Changing it turns the opened model at once.">up</label>
+        <select id="sel-imp-up" class="up" title="up axis of the file"><option value="+z">z</option><option value="+y">y</option><option value="-y">−y</option><option value="+x">x</option><option value="-x">−x</option><option value="-z">−z</option></select>
+        <span class="hint">or drop one anywhere</span>
       </div>
       <div class="row">
         <button id="btn-export" class="btn">Export lattice</button>
       </div>
+      <div class="row import" id="import-prog" hidden>
+        <progress id="pg-import" max="1" value="0"></progress>
+        <span class="hint" id="tx-import"></span>
+        <button class="btn sm" id="btn-import-cancel" type="button">Cancel</button>
+      </div>
+      <details class="sub" id="import-opts">
+        <summary>import options</summary>
+        <div class="row">
+          <label for="nb-imp-edges" title="carrier edges across the bounding-box diagonal: target edge h = bbox / edges (export_carrier.py --edges)">edges / bbox</label>
+          <input type="number" id="nb-imp-edges" class="num sm" min="20" max="600" step="10" value="120">
+          <label for="nb-imp-max" title="vertex cap: h is coarsened until the carrier fits (export_carrier.py --max-verts)">max v</label>
+          <input type="number" id="nb-imp-max" class="num" min="2000" max="400000" step="1000" value="26000">
+        </div>
+        <div class="row">
+          <label for="nb-imp-crease" title="edges whose faces meet at more than this angle are kept as feature lines (with the boundary)">crease °</label>
+          <input type="number" id="nb-imp-crease" class="num sm" min="10" max="180" step="5" value="40">
+          <label class="check" title="remove flat caps whose whole rim is a crease (the closed base of a modelled cone or tube), so the surface stays open there"><input type="checkbox" id="cb-imp-caps" checked> strip planar caps</label>
+        </div>
+        <div class="row buttons">
+          <button class="btn" id="btn-reimport" type="button" disabled title="run the import again on the last opened file with these options">Remesh again</button>
+          <a class="btn" id="btn-lshc" hidden download title="save the imported carrier as .lshc (the format of carriers/; drop it here later to skip the remesh)">Download .lshc</a>
+        </div>
+      </details>
       </div>
     </details>
 
@@ -204,7 +229,7 @@
       <button class="nb arrow" id="nav-down" title="Roll the model down 90° (shows the top)"><svg viewBox="0 0 16 16"><path d="M8 12.5 3.5 4.5h9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
       <button class="nb" id="nav-proj" title="Perspective — click for orthographic (P)"><svg viewBox="0 0 16 16" class="ic-persp"><path d="M3 13 5.6 3h4.8L13 13z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg><svg viewBox="0 0 16 16" class="ic-ortho" hidden><path d="M3.5 3.5h9v9h-9z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></button>
     </div>
-    <div id="drop" hidden>drop an .stl to load it</div>
+    <div id="drop" hidden>drop a mesh (.stl .obj .ply .off) or a .lshc carrier</div>
   </main>
 
   <!-- display tools: a sidebar beside the view that folds to a narrow tab and docks left or right (as in WeaveSim) -->

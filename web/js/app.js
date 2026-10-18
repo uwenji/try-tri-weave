@@ -1,5 +1,7 @@
 // LocalSH Weave Lab — app state, UI bindings and the frame loop.
-import { Carrier, parseSTL } from './carrier.js';
+import { Carrier, parseLSHC } from './carrier.js';
+import { writeLSHC, MESH_EXT } from './meshio.js';
+import { UP_ROT, upChange, rotatePoints } from './import_pipeline.js';
 import { CpuSolver } from './solver_cpu.js';
 import { GpuSolver, getDevice } from './solver_gpu.js';
 import { extractLattice, chargeSummary, traceStrands, edgeStrain, orientationField } from './lattice.js';
@@ -80,7 +82,8 @@ function setCarrier(c, aDefault, opts = {}) {
   renderRefineChips();
   const q = c.meta;
   $('ro-carrier').textContent = `${c.meta.input_vertices ? `input ${c.meta.input_vertices} v → ` : ''}carrier ${c.n} v · ${c.F.length / 3} f · χ = ${c.chi} · h = ${c.h.toFixed(3)}` +
-    (q.min_angle != null ? ` · min angle ${q.min_angle.toFixed(0)}° · ${q.skinny_pct.toFixed(1)}% skinny` : '') + (q.flips != null ? ` · iDT flips ${q.flips}` : '');
+    (q.min_angle != null ? ` · min angle ${q.min_angle.toFixed(0)}° · ${q.skinny_pct.toFixed(1)}% skinny` : '') + (q.flips != null ? ` · iDT flips ${q.flips}` : '') +
+    (q.remesh ? ` · ${q.remesh}` : '');
   const notes = (q.notes || []); $('ro-notes').hidden = !notes.length; $('ro-notes').textContent = notes.join('; ');
   setStage('i-file', notes.length ? 'warn' : 'ok');
   $('st-mesh').textContent = `${c.name} · ${c.n} v · ${c.F.length / 3} f · χ = ${c.chi} · ∫K = ${(c.omega * 180 / Math.PI).toFixed(0)}°`;
@@ -1024,12 +1027,22 @@ function exportLattice() {
 
 // ------------------------------------------------------------------ bindings
 function bind() {
-  $('sel-zoo').addEventListener('change', (e) => { if (e.target.value !== '__file__') loadCarrierByName(e.target.value); });
-  $('file-stl').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) openFile(f); });
-  const vp = $('viewport');
-  vp.addEventListener('dragover', (e) => { e.preventDefault(); $('drop').hidden = false; });
-  vp.addEventListener('dragleave', () => { $('drop').hidden = true; });
-  vp.addEventListener('drop', (e) => { e.preventDefault(); $('drop').hidden = true; const f = e.dataTransfer.files[0]; if (f) openFile(f); });
+  $('sel-zoo').addEventListener('change', (e) => {
+    if (e.target.value !== '__file__') loadCarrierByName(e.target.value);
+    else if (S.imported) setCarrier(new Carrier(S.imported), S.imported.meta.a_default);
+  });
+  $('file-stl').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; });
+  // drop a mesh anywhere on the page
+  const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+  document.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); $('drop').hidden = false; });
+  document.addEventListener('dragleave', (e) => { if (!e.relatedTarget || e.clientX <= 0 || e.clientY <= 0 || e.clientX >= innerWidth || e.clientY >= innerHeight) $('drop').hidden = true; });
+  document.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); $('drop').hidden = true; const f = e.dataTransfer.files[0]; if (f) openFile(f); });
+  // import options, cancel, again
+  loadImportOpts();
+  for (const id of ['nb-imp-edges', 'nb-imp-max', 'nb-imp-crease', 'cb-imp-caps']) $(id).addEventListener('change', saveImportOpts);
+  $('sel-imp-up').addEventListener('change', () => { saveImportOpts(); reorientOpened(); });
+  $('btn-import-cancel').addEventListener('click', cancelImport);
+  $('btn-reimport').addEventListener('click', () => { if (S.importFile) runImport(S.importFile); });
   // density
   $('sl-a').addEventListener('input', (e) => { $('nb-a').value = aFromSlider(+e.target.value).toFixed(3); });
   $('sl-a').addEventListener('change', (e) => onDensityChange(aFromSlider(+e.target.value)));
@@ -1174,18 +1187,95 @@ function bind() {
   window.addEventListener('resize', () => { drawChart(); drawPhase(); drawDtChart(); });
 }
 
-async function openFile(file) {
-  setStatus(`reading ${file.name}…`);
+// ------------------------------------------------------------------ import: any mesh, repaired and remeshed in a worker
+let iw = null, iwId = 0;
+function importOpts() {
+  const num = (id, d) => { const v = +$(id).value; return Number.isFinite(v) && v > 0 ? v : d; };
+  const up = $('sel-imp-up').value;
+  return { edges: num('nb-imp-edges', 120), maxVerts: Math.round(num('nb-imp-max', 26000)), creaseDeg: num('nb-imp-crease', 40), stripCaps: $('cb-imp-caps').checked, up: UP_ROT[up] ? up : '+z' };
+}
+function saveImportOpts() { try { localStorage.setItem('localsh-import', JSON.stringify(importOpts())); } catch (e) { /* ignore */ } }
+function loadImportOpts() {
   try {
-    const buf = await file.arrayBuffer();
-    const { V, F } = parseSTL(buf);
-    let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < V.length / 3; i++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], V[3 * i + k]); hi[k] = Math.max(hi[k], V[3 * i + k]); }
-    const bbox = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
-    const c = Carrier.fromMesh(file.name, V, F, bbox / 104);
-    setCarrier(c, bbox / 13); $('sel-zoo').value = '__file__';
-    setStatus(`${file.name}: ${c.meta.notes.join('; ')} — prepare it with export_carrier.py for a remeshed carrier`);
-  } catch (e) { console.error(e); setStatus(`could not read ${file.name}: ${e.message}`); }
+    const o = JSON.parse(localStorage.getItem('localsh-import') || 'null'); if (!o) return;
+    if (o.edges) $('nb-imp-edges').value = o.edges; if (o.maxVerts) $('nb-imp-max').value = o.maxVerts;
+    if (o.creaseDeg) $('nb-imp-crease').value = o.creaseDeg; if (o.stripCaps != null) $('cb-imp-caps').checked = !!o.stripCaps;
+    if (o.up && UP_ROT[o.up]) $('sel-imp-up').value = o.up;
+  } catch (e) { /* ignore */ }
+}
+function showImport(on, frac, text) {
+  $('import-prog').hidden = !on;
+  if (frac != null) $('pg-import').value = Math.max(0, Math.min(1, frac));
+  if (text != null) { $('tx-import').textContent = text; $('tx-import').title = text; }
+}
+const safeName = (s) => String(s).replace(/[^A-Za-z0-9_-]+/g, '_');
+
+async function openFile(file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext === 'lshc') return openLSHC(file);
+  if (!MESH_EXT.includes(ext)) { setStatus(`${file.name}: not a mesh — use .stl, .obj, .ply, .off or .lshc`); return; }
+  S.importFile = file; $('btn-reimport').disabled = false;
+  return runImport(file);
+}
+
+async function openLSHC(file) {
+  try {
+    const data = parseLSHC(await file.arrayBuffer()); data.name = data.name || file.name.replace(/\.lshc$/i, '');
+    S.imported = data; const c = new Carrier(data);
+    setCarrier(c, data.meta && data.meta.a_default || c.bbox / 13); markImported(c, data, false);
+    setStatus(`${file.name}: carrier loaded`);
+  } catch (e) { console.error(e); setStatus(`could not read ${file.name}: ${e.message}`); setStage('i-file', 'bad'); }
+}
+
+function markImported(c, data, offerDownload) {
+  const opt = $('sel-zoo').querySelector('option[value="__file__"]');
+  if (opt) { opt.textContent = `${c.name}  (opened, ${c.n} v)`; opt.hidden = false; $('sel-zoo').value = '__file__'; }
+  const a = $('btn-lshc');
+  if (a._url) { URL.revokeObjectURL(a._url); a._url = null; }
+  a.hidden = !offerDownload || window.top !== window.self;
+  if (offerDownload) { a._url = URL.createObjectURL(new Blob([writeLSHC(data)], { type: 'application/octet-stream' })); a.href = a._url; a.download = safeName(c.name) + '.lshc'; }
+}
+
+/** the up axis changed while an opened mesh (or .lshc) is shown: turn it (a rotation does not change the remesh, so the
+ *  carrier is rotated rather than rebuilt); a zoo carrier is left alone — the setting is for the next file */
+function reorientOpened() {
+  const d = S.imported; if (!d || $('sel-zoo').value !== '__file__') return;
+  d.meta = d.meta || {}; d.meta.options = d.meta.options || {};
+  const from = d.meta.options.up || '+z', to = $('sel-imp-up').value; if (from === to) return;
+  d.V = rotatePoints(Float64Array.from(d.V), upChange(from, to)); d.meta.options.up = to; d.sideChecked = true;
+  const c = new Carrier(d); setCarrier(c, d.meta.a_default || c.bbox / 13); markImported(c, d, true);
+  setStatus(`${c.name}: up axis ${to.replace('+', '')} — the model turned, carrier unchanged`);
+}
+
+function cancelImport() {
+  iwId++; if (iw) { iw.terminate(); iw = null; }
+  showImport(false); setStatus('import cancelled'); setStage('i-file', S.carrier ? 'ok' : 'idle');
+}
+
+async function runImport(file) {
+  const opts = importOpts(), id = ++iwId; saveImportOpts();
+  setStatus(`importing ${file.name}…`); setStage('i-file', 'idle'); showImport(true, 0, 'reading the file');
+  let buf; try { buf = await file.arrayBuffer(); } catch (e) { showImport(false); setStatus(`could not read ${file.name}: ${e.message}`); setStage('i-file', 'bad'); return; }
+  if (id !== iwId) return;
+  const fail = (msg) => {
+    if (id !== iwId) return; showImport(false); setStatus(`could not import ${file.name}: ${msg}`);
+    $('ro-notes').hidden = false; $('ro-notes').textContent = `import of ${file.name} failed: ${msg}`; setStage('i-file', 'bad');
+  };
+  const finish = (data) => {
+    if (id !== iwId) return; showImport(false);
+    S.imported = data; const c = new Carrier(data);
+    setCarrier(c, data.meta.a_default); markImported(c, data, true);
+    setStatus(`${file.name}: ${data.meta.remesh}`);
+  };
+  if (!iw) { try { iw = new Worker(new URL('./import_worker.js', import.meta.url), { type: 'module' }); } catch (e) { iw = null; } }
+  if (iw) {
+    iw.onmessage = (e) => { const m = e.data; if (m.id !== iwId) return; if (m.error) fail(m.error); else if (m.done) finish(m.data); else showImport(true, m.progress, m.text); };
+    iw.onerror = (e) => { e.preventDefault(); iw = null; fail(e.message || 'the import worker stopped'); };
+    iw.postMessage({ id, buf, name: file.name, opts }, [buf]);
+  } else {                                                                   // no module workers: run here (the page waits)
+    try { const { prepareCarrier } = await import('./import_pipeline.js'); finish(prepareCarrier(buf, file.name, opts, (f, t) => showImport(true, f, t))); }
+    catch (e) { console.error(e); fail(e.message); }
+  }
 }
 
 // ------------------------------------------------------------------ boot
@@ -1203,7 +1293,7 @@ async function main() {
   await loadManifest();
   const hash = decodeURIComponent(location.hash.slice(1));
   const wanted = hash && S.manifest.find(m => m.name === hash || m.file.toLowerCase().includes(hash.toLowerCase())) || S.manifest.find(m => m.name === 'v4Cone_sharp') || S.manifest[0];
-  if (wanted) await loadCarrierByName(wanted.name); else setStatus('no carriers found — drop an .stl');
+  if (wanted) await loadCarrierByName(wanted.name); else setStatus('no carriers found — open or drop a mesh');
   syncStepsUI(); drawChart(); drawPhase(); drawDtChart(); updateViewSum();
   const loop = () => { tick(); view.render(); requestAnimationFrame(loop); };
   requestAnimationFrame(loop);
