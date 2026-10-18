@@ -61,24 +61,40 @@ needed for the view in any case.
 
 ## The panel
 
-The left bar starts with the **growth strip** (pinned, never folds: peaks · interior · singular against the step, solid =
-tracked, dashed = the *ideal front* predicted from the flat front speed — see *Prediction* below; singular has its own right
-axis; the x axis zooms to what is computed plus the predicted cover ▴; click or drag on it to scrub the shown step, the
-shaded range is what has been computed; the line under it says how far the tracked front runs behind the ideal one). Below it the five sections fold
-with a click on their header; a folded header still shows its key value (surface · a and sites · seed valence and centre
-· steps · active layers), and what is folded is remembered in the browser.
+Layout (2026-10-18): status bar · left bar (solver strip + sections 1–4 + 5 Explain) · 3-D view · **Display** sidebar.
+The left bar starts with the **solver strip** (pinned): the legend line (peaks · interior · singular, with a chevron that
+folds the chart and a status mark), the **growth chart** (solid = tracked, dashed = the *ideal front* predicted from the
+flat front speed — see *Prediction* below; singular has its own right axis; the x axis zooms to what is computed plus the
+predicted cover ▴; click or drag on it to scrub the shown step), then `steps`, Run / +500 / Re-seed / Export, max steps and
+per frame. Below it the sections fold with a click on their header; a folded header still shows its key value, and what is
+folded is remembered in the browser. The **Display** sidebar (the old section 5, as in WeaveSim) sits beside the view: its
+header folds it to a narrow vertical tab, ⇄ docks it on the other side of the view; both are remembered. On a phone it
+stacks under the view.
+
+**Status marks.** Read-outs no longer fill the panel: a coloured ⓘ carries them, and hovering (or tapping) it shows the
+read-out in a card, live while it is open. Colour = how things stand: green fine, orange look at it, red a problem, grey
+nothing yet. Growth (legend line): the singular count and the front against the ideal one (orange when it runs > 12 % off,
+red when the pattern died out). File (zoo row): the carrier summary (orange when the import repaired cracks). Lattice edge
+a (2 Density): the carrier resolution and the density diagram (green at 6–12 carrier edges per a). Anneal: grey off, green
+armed, orange annealing. Heal: the last pass's report (green healed, orange pins held or nothing healed). Removed from the
+panel: the computed-steps line, the carrier range line, the `on the model` chips (they are the `mesh` and `scale a` chips
+of Display), the rotation-field / ĝ / stripes read-outs (the section summary and the status bar keep the essentials), the
+valence number line, the cone editor, the view-cube hint and the lattice / selection read-outs (a click on a lath or a
+vertex reports in the status bar; the valence chips in Display show the counts).
 
 | section | controls | what happens |
 |---|---|---|
-| 1 Surface | zoo list · Open STL… / drop · readouts | loads a prepared carrier (or builds one from an STL in the browser: weld, orient, Loop-subdivide to h, Delaunay flips — no remesher), shows vertices, h, min angle, flips, notes |
-| 2 Density | `lattice edge a` (log) ⓘ · `≈ sites` · q0 · live diagram · `carrier ×1 ×2 ×4 ×8` ⓘ · on the model: `intrinsic mesh`, `scale a at the centre` | re-seeds at the new spacing; the diagram draws a, the lath pitch p = √3⁄2·a, the lath width and the carrier mesh at the true ratio (one tick per carrier edge along a), with sites = area / (√3⁄2·a²) worked out and a gauge of carrier edges per a (6–12 green). The slider spans 6…14 carrier edges per a, so a denser lattice needs a finer carrier: the × chips subdivide the exported carrier in the browser (see *Density* below). `intrinsic mesh` draws the intrinsic Delaunay triangulation the solver uses (flipped edges traced as geodesics across the faces, in the accent colour); `scale a` draws the seed's first ring at the centre (n sites at distance a, spokes, circle ρ = a) |
-| 3 Singularity | number line (valence n · charge 6 − n · cone angle n·60°, detected Ω as a marker) · `valence at the centre` · `Use detected` · click on the surface · seed kind / radius (+ critical radius) / rotation | Ω = Σ K over interior vertices → charge round(Ω/60°) → valence 6 − charge; centre = maximum of the heat-smoothed curvature (flat surfaces: point farthest from the boundary); any change re-seeds. R_c = D / v at the current (r, b): a seed patch smaller than that shrinks |
-| 4 Solve | `steps` (scrub, up to 20 000) · Run / +500 / Re-seed / Export lattice · (r, b) map · `r` `b` · front readout · `dt` ⓘ + dt graph · max steps · per frame · CG iterations | the field is kept when r, b, dt change (operator rebuilt); snapshots every ~20 steps make the slider scrub backwards; export = the dual triangulation as OBJ text (copy; download only works outside the artifact viewer). The (r, b) map is the measured front speed (hatched: the seed dies; tan: pinned; blue: advances, iso-lines 0.25/0.5/0.75/1 a per 100 steps; above r = 0 the zero state is unstable); drag the dot to set r and b, the diamond to set the anneal point. The dt graph: steps to cover the surface against how much the time step slows the front |
-| 4 · anneal | `anneal after growth` · r₂ b₂ · switch when the front stops / at step N | two-stage schedule: grow at (r, b), then, once the peak count has stopped growing (3 read-outs) or at step N, continue with the same field at (r₂, b₂) nearer the hexagon saddle-node (default −0.027, 0.69 ≡ a k⁶-stiffened operator at the original parameters): dislocation dipoles annihilate 4–8× faster, the front is 3–4× slower. Removes isolated extra 5–7 pairs; holonomy seams (grain boundaries between fronts that met) stay. The strip tints the anneal stage; the r/b sliders drive the anneal stage while it runs; Re-seed restores (r, b) |
-| 5 View & readouts | theme auto/light/dark · chips field · mesh (intrinsic) · scale a · lattice · peaks · singular · centre · laths · **orient** (a thin flat arrow at every regular site, in the tangent plane, along the local wave vector of the pattern — perpendicular to one family of lattice edges, 30° off the lattice directions, so it never hides under a lattice line; a direction of the lattice is only defined mod 60°, so the arrows are chosen consistently by transport outward from the site nearest the centre — parallel inside a grain, with one unavoidable 60° cut around a disclination; colour = misorientation to the neighbours after transport over one edge — the lattice-line colour in a grain, amber → red along seams — or `angle θ`, θ mod 60° against the projected global x in cyclic colours; coherence |⟨e^{6iθ}⟩| in the readout) · **strain** (lattice edges as bars coloured cool–warm by ℓ / a − 1, all or one lath family A/B/C, ± range; hover the chip or the ⓘ for the diagram: an edge of family A is twice the A-lath segment beside it, so ℓ > a means longer segments between crossings and larger hexagonal openings) · one chip per singular valence · `lath width [a]` · lath colouring · over/under · `weave side` (along the normals / flipped) · carrier shows (u / Gaussian curvature / smoothed / field 5/7 / stripes, 3 phases / plain) with `colour opacity` toward the plain mesh colour (stripes: one slider each for red, yellow, blue) · `turntable [°/s]` | singular vertices as discs with the valence digit (Paul Tol *light* fills: v3 orange, v4 yellow, v5 pink, v7 blue, v8 cyan, v9 mint); valence histogram of the *interior* peaks, Σ(6−n) vs Ω/60°, strands, knots, parity and colour conflicts |
-| selection | click a lath → its path is highlighted (others dimmed, dark centreline), readout family / knots / over-under / open-closed; click a disc or peak → selected vertex with its lattice index in a larger disc; Esc clears; Shift-click or `Pick centre on surface…` moves the seed centre | selections are remembered by carrier vertex ids, so they survive the re-extraction that happens while the lattice grows |
+| 1 File | zoo list · status mark · Open STL… / drop | loads a prepared carrier (or builds one from an STL in the browser: weld, orient, Loop-subdivide to h, Delaunay flips — no remesher), shows vertices, h, min angle, flips, notes |
+| 2 Density | `lattice edge a` (log) with its status mark (the live diagram is in its card) · `≈ sites` · q0 · `correct q0` · `carrier ×1 ×2 ×4 ×8` ⓘ | re-seeds at the new spacing; the diagram draws a, the lath pitch p = √3⁄2·a, the lath width and the carrier mesh at the true ratio (one tick per carrier edge along a), with sites = area / (√3⁄2·a²) worked out and a gauge of carrier edges per a (6–12 green). The slider spans 6…14 carrier edges per a, so a denser lattice needs a finer carrier: the × chips subdivide the exported carrier in the browser (see *Density* below). `intrinsic mesh` draws the intrinsic Delaunay triangulation the solver uses (flipped edges traced as geodesics across the faces, in the accent colour); `scale a` draws the seed's first ring at the centre (n sites at distance a, spokes, circle ρ = a) |
+| solver strip (pinned) | legend · fold chevron · status mark · growth chart · `steps` (scrub, up to 20 000) · Run / +500 / Re-seed / Export lattice · max steps · per frame | snapshots every ~20 steps make the slider scrub backwards; export = the dual triangulation as OBJ text (copy; download only works outside the artifact viewer) |
+| 3 Singularity | `seed` local / global rotation field · local: `valence at the centre` · `Use detected` · click on the surface · seed kind / radius (+ critical radius) / rotation · global: `size field ĝ` (cones from the curvature / the field's own 5/7s / uniform a) · Solve rotation field + seed | Ω = Σ K over interior vertices → charge round(Ω/60°) → valence 6 − charge; centre = maximum of the heat-smoothed curvature (flat surfaces: point farthest from the boundary); any change re-seeds. R_c = D / v at the current (r, b): a seed patch smaller than that shrinks. Global mode: see *Global mode* below |
+| 4 Solve | (r, b) map · `r` `b` · front readout · `dt` ⓘ + dt graph · CG iterations | the field is kept when r, b, dt change (operator rebuilt). The (r, b) map is the measured front speed (hatched: the seed dies; tan: pinned; blue: advances, iso-lines 0.25/0.5/0.75/1 a per 100 steps; above r = 0 the zero state is unstable); drag the dot to set r and b, the diamond to set the anneal point. The dt graph: steps to cover the surface against how much the time step slows the front |
+| 4 · heal | `Heal 5-7-5` · `pin what will not hold` · `Clear pins` · status mark (the report) | takes the bound 5–7 pairs apart inside the solver (see *Healing bound pairs* below): 5-7-5 → one 5, 7-5-7 → one 7, wrong diagonals flipped; each kick is held for 60 steps and tested over 400 free steps, kept only if the defects around it went down; a kick that does not hold can be pinned (kept applied after every batch) |
+| 4 · anneal | `anneal after growth` · status mark · r₂ b₂ · switch when the front stops / at step N | two-stage schedule: grow at (r, b), then, once the peak count has stopped growing (3 read-outs) or at step N, continue with the same field at (r₂, b₂) nearer the hexagon saddle-node (default −0.027, 0.69 ≡ a k⁶-stiffened operator at the original parameters): dislocation dipoles annihilate 4–8× faster, the front is 3–4× slower. Removes isolated extra 5–7 pairs; holonomy seams (grain boundaries between fronts that met) stay. The strip tints the anneal stage; the r/b sliders drive the anneal stage while it runs; Re-seed restores (r, b) |
+| Display (sidebar) | theme auto/light/dark · chips field · mesh (intrinsic) · scale a · lattice · peaks · singular · centre · laths · **orient** (a thin flat arrow at every regular site, in the tangent plane, along the local wave vector of the pattern — perpendicular to one family of lattice edges, 30° off the lattice directions, so it never hides under a lattice line; a direction of the lattice is only defined mod 60°, so the arrows are chosen consistently by transport outward from the site nearest the centre — parallel inside a grain, with one unavoidable 60° cut around a disclination; colour = misorientation to the neighbours after transport over one edge — the lattice-line colour in a grain, amber → red along seams — or `angle θ`, θ mod 60° against the projected global x in cyclic colours; coherence |⟨e^{6iθ}⟩| in the readout) · **strain** (lattice edges as bars coloured cool–warm by ℓ / a − 1, all or one lath family A/B/C, ± range; hover the chip or the ⓘ for the diagram: an edge of family A is twice the A-lath segment beside it, so ℓ > a means longer segments between crossings and larger hexagonal openings) · one chip per singular valence · `lath width [a]` · lath colouring · over/under · `input normal` (along the normals / flipped) · carrier shows (u / Gaussian curvature / smoothed / field 5/7 / stripes, 3 phases / plain) with `colour opacity` toward the plain mesh colour (stripes: one slider each for red, yellow, blue) · `turntable [°/s]` | singular vertices as discs with the valence digit (Paul Tol *light* fills: v3 orange, v4 yellow, v5 pink, v7 blue, v8 cyan, v9 mint); read-out at the bottom: strands, knots, parity and colour conflicts |
+| selection | click a lath → its path is highlighted (others dimmed, dark centreline), status bar: family / knots / over-under / open-closed; click a disc or peak → selected vertex with its lattice index in a larger disc (status bar: valence, interior or open link); Esc clears; Shift-click or `Pick centre on surface…` moves the seed centre | selections are remembered by carrier vertex ids, so they survive the re-extraction that happens while the lattice grows |
 | growth strip | click / drag scrubs the step | peaks · interior · singular against the step; the step where "singular" leaves 1 is where the surface stops being ideal for that lattice |
-| view cube (top right of the view) | click a face / edge / corner · drag the cube · ▲▼◀▶ · ⌂ home · ⤢ fit · ⟳ turntable · ▱ perspective/orthographic · keys H F T P | the cube mirrors the camera (z up: FRONT faces −y, RIGHT +x, TOP +z); a click turns the view to look along that facet, animated; the arrows roll the model by 90° (▲ shows the face below, ◀ brings the right face to the front); the turntable spins the view about the vertical axis at the speed set in section 5 and pauses while you drag; projection switches keep the apparent size |
+| view cube (top right of the view) | click a face / edge / corner · drag the cube · ▲▼◀▶ · ⌂ home · ⤢ fit · ⟳ turntable · ▱ perspective/orthographic · keys H F T P | the cube mirrors the camera (z up: FRONT faces −y, RIGHT +x, TOP +z); a click turns the view to look along that facet, animated; the arrows roll the model by 90° (▲ shows the face below, ◀ brings the right face to the front); the turntable spins the view about the vertical axis at the speed set in Display and pauses while you drag; projection switches keep the apparent size |
 
 ## Prediction (growth strip, 2026-10-15)
 
@@ -146,8 +162,8 @@ valences.
 **Side.** Open surfaces get their global orientation from a rule shared by `carrier.py` and `carrier.js` (applied
 again on load, so older exports agree): closed → outward; open → the convex side when the total mean curvature is
 clearly signed (tubes, branching tubes, domes face outward), else +z (saddles, sheets). A branching tube like the
-*tree* used to come out facing inward (the old +z rule), which put the laths inside the trunk; `weave side` in
-section 5 flips the side by hand, and over/under swaps with it. Picking follows what is on screen: an opaque
+*tree* used to come out facing inward (the old +z rule), which put the laths inside the trunk; `input normal` in
+Display flips the side by hand, and over/under swaps with it. Picking follows what is on screen: an opaque
 field hides what is behind it, a hidden or wire-only carrier does not.
 
 **Camera.** OrbitControls with +z up, so the view never rolls. Canonical views are reached by animating the
@@ -207,6 +223,64 @@ Section 3 → `seed: global rotation field`. `js/rosy.js` solves the globally sm
 three stripe phases along it as one rank-3 bundle (Knöppel et al. 2015; families permute around singularities, conjugated when
 reversed); its branch points are the dislocations the geometry forces; u0 = ⅓ Σ Re ψ̂ is the hexagonal initial field everywhere.
 Layer: `rotation field`. `carrier shows` → `field 5/7`: the field's singular faces as charges, red = 5, blue = 7, each a Gaussian of the geodesic distance (σ = 0.8 a, full colour at the face); → `stripes, 3 phases`: the seed's three stripe phases (before SH) as red / yellow / blue bands where each family's laths would run (band = lath width, phase ≡ π), one opacity per family; a band that stops is a branch point, two families stopping together make a 5–7; around a field 5/7 the colours swap across a seam (no consistent labelling exists there). Per-face phases come from `stripes.js · stripeFaces` in the worker. Headless: `node test_rosy.mjs treeBig`, `node test_global.mjs treeBig 2500 1 321.2`
-(treeBig ×2 at 558 sites → {5:2, 6:469, 7:28, 8:2}, Σ(6−n) = −30). Not yet: the size-field metric ĝ for the field and the stripes
-(closed surfaces with spread curvature, e.g. the torus, still get 5–7 rows), and a Worker for the two solves (CPU, 10–40 s at ×2).
+(treeBig ×2 at 558 sites → {5:2, 6:469, 7:28, 8:2}, Σ(6−n) = −30). The two solves run in a Worker (`js/global_worker.js` →
+`js/global_pipeline.js`, shared with `test_ghat.mjs`).
+
+### Size field ĝ in global mode (2026-10-18)
+Section 3 → `size field ĝ`. At ×2 and denser the stripe phases are forced to fork (branch points) wherever the field's
+curl — the surface's curvature spread over the surface — leaves turning that no smooth phase can follow; SH keeps those forks
+as 5–7 pairs and 5-5-7 clusters even where the lattice is nearly flat. The three steps: (1) count the forced forks
+(`stripes.js · branchPoints`), (2) split the turning into what a size field can absorb and what topology fixes (6χ net
+charge on a closed surface, the rim's turning on an open one), (3) put the turning into cones and let ĝ = e^{2φ} g be flat
+between them: L φ = Σ_c Ω_c δ_c − K (`carrier.sizeField`, cones smeared over a/2 so φ has no log spikes). The rotation field,
+the stripes and SH are then solved in ĝ (`conformalOps`: ℓ̂ = e^{(φi+φj)/2} ℓ, faces a steep φ would flatten are scaled
+uniformly), q0 is constant in ĝ, and the lattice is regular there with edge a·e^{−φ} on the model.
+`cones from the curvature` (`js/cones.js · placeCones`): the curvature is quantised to the lattice scale by error diffusion
+along a tour of a-sized cells — the residual charge runs up cell by cell and every time it passes ±30° a cone of
+round(charge/60°) (valence 5/4/3 or 7/8/9) is placed in the cell that contributed most; a closed surface ends with 6χ net;
+five rounds of Lloyd relaxation then move each cone to the centroid of the curvature it stands for, and each cone is
+smeared over a/2 along the curvature of its own sign (an apex keeps its cone, a dome spreads it), with φ normalised so the
+site count equals that of uniform a. `the field's own 5/7s`: the smoothest field's singular faces as cones. `uniform a`: no
+size field (the old behaviour).
+Read-outs: the cones and their net charge, the model edge a·e^{−φ} (p5–p95), the share of ĝ edges longer than a/6 (refine when
+it exceeds a few %), and the branch points of the ĝ stripes — the test of step 3: on the domes they go from 25 to 0.
+`carrier shows` → `lattice edge a·e^{−φ}` draws the size field (red tighter, blue wider); `field 5/7` and `stripes` now also
+work in local mode (computed for the display, the local seed stays). Headless: `node test_ghat.mjs v4Cone_round greedy 1 2500`
+(mode greedy | field | uniform, level, steps, r, b) appends to `test_ghat_results.jsonl`.
+
+**Cone editor (removed 2026-10-18).** An editor for the automatic cones (on/off, valence, radius, rotation with an
+alignment weight) was tried and taken out again: too much hand work for what it gave. The worker and `global_pipeline.js`
+still accept `edits` (`cones.js · applyConeEdits`, the constrained `smoothestRoSy`), the app sends none.
+
+**Solver hand-over.** Switching to global mode (or changing the density) while the GPU solver is stepping used to freeze the
+run: the old `GpuSolver` was disposed with a step in flight, its `mapAsync` rejected and the pump stopped the run at the
+old step count. `GpuSolver.dispose` now waits for in-flight steps and the pump carries on with the replacement solver.
 `cb-disp` (section 2): the solvers now correct q0 for the carrier's dispersion (edge = a; see `test_dispersion.mjs`, `test_calibrate.mjs`).
+
+## Healing bound 5–7 pairs (2026-10-18)
+At ×2 the 5s acquire bound dislocations — the beginning of grain-boundary scars (Bausch et al. 2003): a 5-7-5 where the
+lattice could hold a single 5, a 7-5-7 where it could hold a single 7. Read as a mesh, each is one local operation away
+from the single defect (`js/heal.js · findMotifs`, from the cyclic links of the dual triangulation):
+- **insert** — 5-7-5 with two regular sites between the 5s in the 7's link: a pentagon (the 7, the two 5s and those two
+  sites) missing its centre. The 7 holds both diagonals; a site at the centre makes it a 5 and the five corners 6s.
+- **merge** — 7-5-7 with one regular site B between the 7s in the 5's link: a heptagon holding one site too many; merging
+  the 5 with B leaves one 7.
+- **flip** — 5-7-5 with one site between the 5s (quad with the diagonal on the 7), or a 7-7-5 triangle: an edge flip.
+- **tri** — 5-5-7 triangles: no single local operation (a dislocation beside a 5); left to the anneal, as are free 5–7 pairs.
+The operation is done in the field, not on the mesh (`healPass`): a bump of the peaks' median height (radius 0.42 a) is
+written at the new site, the 7 is pushed 0.4 a outward (trough on its old place, bump on the new one) — without the push the
+new peak and the 7 merge and slide back; merge: troughs on the two sites, bump between them; flip: the edge's ends moved
+apart and the opposite corners together by 0.35 a. The kick is re-applied every 5 steps for 60 steps, then the field runs
+400 steps free; the lattice is read again and the kick is kept when the non-6 peaks within 2.5 a went down with the same
+charge and the total did not go up, else the field and step count are put back. Motifs are re-read after every attempt;
+an insert tries the pentagon's centre first and the far side's hexagon centre (the 7 becomes the 5) second.
+**Pins.** A 5-7-5 that re-forms whenever the field is free is one the physics wants — on Bunny the one case had a second
+7 at 1.9 a (two dislocations, local charge 0). Its held state is still a clean single 5 (spokes 0.82–0.96 a), so with `pin
+what will not hold` the kick is kept applied after every batch of steps (`applyPins` in the pump) and the 5 stays; only
+inserts and merges whose held lattice is cleaner are pinned, never flips; `Clear pins` lets the field go back. Pins are
+dropped with the field (re-seed, density, new surface).
+Measured at ×2 with the uniform global seed, 3000 steps: Bunny (a 8.1, r −0.11, b 1.44) 67 → 59 non-6 (2 merges, 1 insert,
+1 pinned; 8 s on the GPU); goose (a 7.08, r −0.24, b 1.70) 65 → 57 (1 flip, 3 inserts, nothing pinned; 6 s). CPU check:
+`node test_heal.mjs Bunny 8.1 1 3000 -0.110 1.44` (the field after the growth is cached in `heal_<name>_<level>_<steps>.json`).
+Also in this version: the pump yields through a MessageChannel in a hidden tab (Chrome throttles timers there to 1 Hz,
+1/min after five minutes), and starts as soon as the target changes or a seed arrives instead of waiting for the tick.

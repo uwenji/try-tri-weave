@@ -26,26 +26,31 @@ export class CpuSolver {
     // itself sits at q0 to +0.3 % (experiments/calibrate.js, ComFiT-style strain minimisation).
     this.disp = dispersion && this.c.h ? 1 - (this.q0 * this.c.h) ** 2 / 24 : 1;
     this.iq2 = 1 / (this.q0 * this.q0 * this.disp);
-    // Jacobi diagonal of A = (1 − dt r) M + dt S M⁻¹ S
-    const { L, m, Ldiag } = this.c, n = this.n, diag = new Float64Array(n);
+    // Jacobi diagonal of A = (1 − dt r) M + dt S M⁻¹ S   (r may vary per vertex: this.rLocal, see setLocalR)
+    if (this.rDeltas) { this.rLocal = new Float64Array(this.n).fill(r); for (const [i, d] of this.rDeltas) this.rLocal[i] = r + d; } else this.rLocal = null;
+    const { L, m, Ldiag } = this.c, n = this.n, diag = new Float64Array(n), rl = this.rLocal;
     for (let i = 0; i < n; i++) {
       let s = 0;
       for (let k = L.indptr[i]; k < L.indptr[i + 1]; k++) {
         const j = L.indices[k]; const Sij = (j === i ? m[i] : 0) - L.data[k] * this.iq2; s += Sij * Sij / m[j];
       }
-      diag[i] = (1 - dt * r) * m[i] + dt * s;
+      diag[i] = (1 - dt * (rl ? rl[i] : r)) * m[i] + dt * s;
     }
     this.diag = diag;
   }
+
+  /** a local change of r: r_i = r + delta(i) over the given vertices (Map vertex → delta, or null to clear) */
+  setLocalR(deltas) { this.rDeltas = deltas && deltas.size ? deltas : null; this.setParams({}); }
 
   /** y = S x = m∘x − L x / q0² */
   applyS(x, y) { spmv(this.c.L, x, this.tmp); const m = this.c.m; for (let i = 0; i < this.n; i++) y[i] = m[i] * x[i] - this.iq2 * this.tmp[i]; }
 
   applyA(x, out) {
-    const m = this.c.m, n = this.n, { dt, r } = this;
+    const m = this.c.m, n = this.n, { dt, r } = this, rl = this.rLocal;
     this.applyS(x, this.t1); for (let i = 0; i < n; i++) this.t1[i] /= m[i];
     this.applyS(this.t1, this.t2);
-    for (let i = 0; i < n; i++) out[i] = (1 - dt * r) * m[i] * x[i] + dt * this.t2[i];
+    if (rl) for (let i = 0; i < n; i++) out[i] = (1 - dt * rl[i]) * m[i] * x[i] + dt * this.t2[i];
+    else for (let i = 0; i < n; i++) out[i] = (1 - dt * r) * m[i] * x[i] + dt * this.t2[i];
   }
 
   setInitial(u0) { this.u = Float64Array.from(u0); this.steps = 0; this.snapshots = [Float32Array.from(u0)]; }

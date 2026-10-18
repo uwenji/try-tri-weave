@@ -193,6 +193,8 @@ export class GpuSolver {
     this.uHost = Float32Array.from(u0); this.dev.queue.writeBuffer(this.bufu, 0, this.uHost);
     this.steps = 0; this.snapshots = [Float32Array.from(this.uHost)];
   }
+  /** overwrite the field without touching the step count (heal.js: nucleated sites, pins) */
+  setU(u) { this.uHost = Float32Array.from(u); this.dev.queue.writeBuffer(this.bufu, 0, this.uHost); }
 
   _encodeStep(pass) {
     const d = (pipe, bgp) => { pass.setPipeline(pipe); pass.setBindGroup(0, bgp); pass.dispatchWorkgroups(this.nwg); };
@@ -212,6 +214,11 @@ export class GpuSolver {
 
   /** advance nsteps; resolves when uHost holds the new field (and snapshots are recorded) */
   async step(nsteps) {
+    if (this.disposed) throw new Error('solver disposed');
+    this.inflight = (this.inflight || 0) + 1;
+    try { return await this._step(nsteps); } finally { this.inflight--; if (this.disposed && !this.inflight) this._destroy(); }
+  }
+  async _step(nsteps) {
     const enc = this.dev.createCommandEncoder();
     const snaps = []; let done = 0, k = 0;
     while (done < nsteps) {
@@ -244,5 +251,8 @@ export class GpuSolver {
   }
   get t() { return this.steps * this.dt; }
   async sync() { return this.uHost; }
-  dispose() { for (const b of [this.bufM, this.bufIndptr, this.bufIndices, this.bufData, this.bufu, this.buft1, this.bufAp, this.bufres, this.bufz, this.bufp, this.bufdiag, this.bufPart, this.paramA, this.paramB, ...this.staging]) try { b.destroy(); } catch (e) { /* ignore */ } }
+  /** release the GPU buffers — after a step still in flight has read its result (destroying a mapped staging buffer
+   *  rejects that step, which used to clamp the app's target to the old solver's count when a carrier or seed changed) */
+  dispose() { this.disposed = true; if (!this.inflight) this._destroy(); }
+  _destroy() { for (const b of [this.bufM, this.bufIndptr, this.bufIndices, this.bufData, this.bufu, this.buft1, this.bufAp, this.bufres, this.bufz, this.bufp, this.bufdiag, this.bufPart, this.paramA, this.paramB, ...this.staging]) try { b.destroy(); } catch (e) { /* ignore */ } }
 }

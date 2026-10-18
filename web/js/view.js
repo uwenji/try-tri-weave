@@ -38,7 +38,7 @@ export class View {
     this.fill = new THREE.DirectionalLight(0xffffff, 0.9); this.fill.position.set(1.5, 0.8, 0.6); this.scene.add(this.fill);
     this.group = new THREE.Group(); this.scene.add(this.group);
     this.layers = {};                                     // name → Object3D
-    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false, rosy: false };
+    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false, rosy: false, cones: true };
     this.fieldAlpha = 1;                                  // carrier colours: 1 = the colour map, 0 = the plain mesh colour
     this.stripeAlpha = [1, 1, 1]; this.stripeHalfW = 0.65; // stripes: opacity per colour slot, band half-width in radians of phase
     this.carrierMode = 'vertex';                          // 'vertex' (vertex colours) | 'stripes' (per-face phases, shaded per pixel)
@@ -283,24 +283,43 @@ export class View {
   }
 
   // --- labelled discs (sprites) ---------------------------------------------------------------------------------
-  _labelTexture(text, fillHex) {
-    const key = text + '|' + fillHex;
+  /** ring: a hollow disc with a thick border in fillHex (the cones of the size field, distinct from the lattice's own discs) */
+  _labelTexture(text, fillHex, ring = false) {
+    const key = text + '|' + fillHex + (ring ? '|ring' : '');
     if (this.labelCache.has(key)) return this.labelCache.get(key);
     const S = 128, cv = document.createElement('canvas'); cv.width = S; cv.height = S;
     const ctx = cv.getContext('2d');
-    ctx.beginPath(); ctx.arc(S / 2, S / 2, S / 2 - 4, 0, 2 * Math.PI); ctx.fillStyle = fillHex; ctx.fill();
-    ctx.lineWidth = 5; ctx.strokeStyle = this.dark ? 'rgba(255,255,255,0.85)' : 'rgba(30,32,34,0.75)'; ctx.stroke();
+    if (ring) {
+      ctx.beginPath(); ctx.arc(S / 2, S / 2, S / 2 - 10, 0, 2 * Math.PI); ctx.fillStyle = this.dark ? 'rgba(30,32,34,0.82)' : 'rgba(255,255,255,0.88)'; ctx.fill();
+      ctx.lineWidth = 14; ctx.strokeStyle = fillHex; ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(S / 2, S / 2, S / 2 - 4, 0, 2 * Math.PI); ctx.fillStyle = fillHex; ctx.fill();
+      ctx.lineWidth = 5; ctx.strokeStyle = this.dark ? 'rgba(255,255,255,0.85)' : 'rgba(30,32,34,0.75)'; ctx.stroke();
+    }
     const px = text.length <= 1 ? 76 : text.length === 2 ? 62 : text.length === 3 ? 48 : 38;
     ctx.font = `700 ${px}px "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#1b1d1f'; ctx.fillText(text, S / 2, S / 2 + px * 0.06);
+    ctx.fillStyle = ring ? (this.dark ? '#e4e5e3' : '#1b1d1f') : '#1b1d1f'; ctx.fillText(text, S / 2, S / 2 + px * 0.06);
     const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
     this.labelCache.set(key, tex); return tex;
   }
 
-  _disc(text, fillHex, pos, size, userData) {
-    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: this._labelTexture(text, fillHex), transparent: true, depthWrite: false }));
+  _disc(text, fillHex, pos, size, userData, ring = false) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: this._labelTexture(text, fillHex, ring), transparent: true, depthWrite: false }));
     sp.position.set(pos[0], pos[1], pos[2]); sp.scale.set(size, size, 1); sp.renderOrder = 5; Object.assign(sp.userData, userData);
     return sp;
+  }
+
+  /** the cones of the size field ĝ as ring discs with their valence (grey when switched off, larger when selected);
+   *  cones = [{vertex, valence, on}], picked as {kind: 'cone', idx} */
+  setCones(cones, selected = -1) {
+    const c = this.carrier;
+    if (!c || !cones || !cones.length) { this._setLayer('cones', null); return; }
+    const g = new THREE.Group(), da = this.a || 8 * c.h;
+    cones.forEach((q, i) => {
+      const sp = this._disc(String(q.valence), q.on === false ? '#8a8e95' : valenceHex(q.valence), this.lifted(q.vertex, 2.6 * c.h), (i === selected ? 1.4 : 1) * Math.max(2.2 * c.h, 0.34 * da), { kind: 'cone', idx: i }, true);
+      sp.renderOrder = 7; g.add(sp);
+    });
+    this._setLayer('cones', g);
   }
 
   // --- lattice overlays ------------------------------------------------------------------------------------
@@ -533,7 +552,7 @@ export class View {
   }
 
   // --- picking ------------------------------------------------------------------------------------------------
-  /** returns {kind: 'lath', strand} | {kind: 'vertex', peak} | {kind: 'carrier', vertex} | null */
+  /** returns {kind: 'lath', strand} | {kind: 'vertex', peak} | {kind: 'cone', idx} | {kind: 'carrier', vertex} | null */
   pick(clientX, clientY) {
     if (!this.mesh) return null;
     const r = this.canvas.getBoundingClientRect();
@@ -541,6 +560,7 @@ export class View {
     this.raycaster.setFromCamera(nd, this.camera);
     const targets = [];
     if (this.layers.selected && this.layers.selected.visible) targets.push(...this.layers.selected.children);
+    if (this.layers.cones && this.layers.cones.visible) targets.push(...this.layers.cones.children);
     if (this.layers.singular && this.layers.singular.visible) targets.push(...this.layers.singular.children.filter(o => o.visible));
     if (this.layers.laths && this.layers.laths.visible) targets.push(this.layers.laths);
     if (this.layers.peaks && this.layers.peaks.visible) targets.push(this.layers.peaks);
@@ -553,6 +573,7 @@ export class View {
     else if (meshHits.length) h = meshHits[0];
     else return null;
     const o = h.object, kind = o.userData.kind;
+    if (kind === 'cone') return { kind: 'cone', idx: o.userData.idx, point: h.point };
     if (kind === 'vertex') return { kind: 'vertex', peak: o.userData.peak, point: h.point };
     if (kind === 'lath') return { kind: 'lath', strand: this.lathFaceStrand ? this.lathFaceStrand[h.faceIndex] : -1, point: h.point };
     if (kind === 'peaks') return { kind: 'vertex', peak: h.instanceId, point: h.point };

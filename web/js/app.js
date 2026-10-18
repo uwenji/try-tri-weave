@@ -9,6 +9,7 @@ import { MinHeap } from './sparse.js';
 import { frontState, predictGrowth, mapValue } from './frontspeed.js';
 import { FRONT } from './frontspeed_table.js';
 import { directionsFromNb0 } from './rosy.js';
+import { healPass, applyPins, findMotifs } from './heal.js';
 
 const SQ3 = Math.sqrt(3);
 const $ = (id) => document.getElementById(id);
@@ -19,12 +20,14 @@ const S = {
   a: 2, valence: 6, centre: -1, centreMode: 'detected', detected: null,
   target: 3000, maxSteps: 20000, spf: 25, cgIters: 12, playing: false, busy: false,
   r: -0.08, b: 1.2, dt: 0.1, seedKind: 'wave', seedR: 2.0, seedPhi: 0, disp: true, seedMode: 'local', rosy: null, stripesRes: null, globalReq: 0,
+  coneMode: 'greedy', solverGhat: null,                   // global mode: cones + size field ĝ ('greedy' | 'field' | 'uniform'); the stripesRes the solver's operators were built from
   lat: null, summary: null, strands: null, history: [], lastExtract: -1, extractEvery: 100, shownStep: -1, scrubbed: false,
   carrierView: 'u', carrierAlpha: 1, stripeAlpha: [1, 1, 1], stripesShown: null, lathW: 0.18, lathCol: 'family', overUnder: true, msg: '',
   theme: 'auto', showValence: {}, selLath: -1, selLathKey: null, selVertex: -1, selVertexKey: -1, armPick: false,
   turntable: false, turnSpeed: 12, projection: 'persp',
   refine: 0, baseCarrier: null, side: 1, cgManual: false,
   anneal: { on: false, r2: -0.027, b2: 0.69, when: 'auto', step: 5000, active: false, startedAt: -1 },
+  pins: [], healing: false, healReport: null,              // heal.js: sites held in the field after every batch of steps, and the last pass's report
   strainFam: -1, strainRange: 0.15, es: null, orient: null, orientMode: 'mis',
   geo: null, pred: null,                                   // geodesic distances from the centre / to the rim, and the growth prediction
 };
@@ -57,7 +60,7 @@ async function loadCarrierByName(name) {
   const m = S.manifest.find(x => x.name === name); if (!m) return;
   setStatus(`loading ${name}…`);
   try { const c = await Carrier.fromURL(m.file); setCarrier(c, m.a_default); $('sel-zoo').value = name; }
-  catch (e) { setStatus(`load failed: ${e.message}`); console.error(e); }
+  catch (e) { setStatus(`load failed: ${e.message}`); console.error(e); $('ro-carrier').textContent = `load failed: ${e.message}`; setStage('i-file', 'bad'); }
 }
 
 /** opts.refine: the same surface at another resolution — keep the camera, the centre and the selection */
@@ -79,6 +82,7 @@ function setCarrier(c, aDefault, opts = {}) {
   $('ro-carrier').textContent = `${c.meta.input_vertices ? `input ${c.meta.input_vertices} v → ` : ''}carrier ${c.n} v · ${c.F.length / 3} f · χ = ${c.chi} · h = ${c.h.toFixed(3)}` +
     (q.min_angle != null ? ` · min angle ${q.min_angle.toFixed(0)}° · ${q.skinny_pct.toFixed(1)}% skinny` : '') + (q.flips != null ? ` · iDT flips ${q.flips}` : '');
   const notes = (q.notes || []); $('ro-notes').hidden = !notes.length; $('ro-notes').textContent = notes.join('; ');
+  setStage('i-file', notes.length ? 'warn' : 'ok');
   $('st-mesh').textContent = `${c.name} · ${c.n} v · ${c.F.length / 3} f · χ = ${c.chi} · ∫K = ${(c.omega * 180 / Math.PI).toFixed(0)}°`;
   setSum('surface', `${c.name} · ${c.n} v`);
   updateDensityReadout(); updateCarrierColors();
@@ -90,25 +94,26 @@ function detect() {
   const d = c.detectSingularity(S.a); S.detected = d;
   if (S.centreMode === 'detected' || S.centre < 0 || S.centre >= c.n) { S.centre = d.centre; S.valence = Math.max(3, Math.min(9, d.valence)); S.centreMode = 'detected'; }
   $('sl-valence').value = S.valence; $('out-valence').value = S.valence;
-  const i = d.info;
-  $('ro-omega').innerHTML = `${i.mode} · ${fmt(i.withinA, 0)} % of Ω within a of the centre`;
-  updateCentreReadout(); drawChargeDiagram();
+  updateCentreReadout();
 }
 function updateCentreReadout() {
   const c = S.carrier; if (!c) return;
   $('ro-centre').textContent = `centre: vertex ${S.centre} (${S.centreMode}) · defect ${fmt(c.K[S.centre] * 180 / Math.PI)}°`;
-  setSum('sing', `v${S.valence} at ${S.centre} (${S.centreMode})`);
-  view.setCentre(S.centre); updateProbe();
+  if (S.seedMode !== 'global') setSum('sing', `v${S.valence} at ${S.centre} (${S.centreMode})`);
+  view.setCentre(S.seedMode === 'global' ? -1 : S.centre); updateProbe();         // the global seed has no centre
 }
 
 // ------------------------------------------------------------------ solver
-function newSolver(reseed) {
+/** ghatRes: a stripesRes with a size field → the solver steps in ĝ = e^{2φ} g (operators from carrier.conformalOps);
+ *  otherwise in the model metric. The lattice read-out always happens on the model surface. */
+function newSolver(reseed, ghatRes = null) {
   const c = S.carrier; if (!c) return;
   if (S.solver) S.solver.dispose();
   // snapshots (float32 per vertex) for scrubbing: ~400 of them, but never more than ~300 MB on fine carriers
   const snapEvery = Math.max(10, Math.round(S.maxSteps / 400 / 10) * 10, Math.ceil(S.maxSteps * c.n * 4 / 300e6 / 10) * 10);
   const opts = { a: S.a, r: S.r, b: S.b, dt: S.dt, cgIters: S.cgIters, snapEvery, dispersion: S.disp };
-  const ops = c;
+  let ops = c; S.solverGhat = null;
+  if (ghatRes && ghatRes.phi && ghatRes.carrier === c) { if (!ghatRes.ops) ghatRes.ops = c.conformalOps(ghatRes.phi, ghatRes.a); ops = ghatRes.ops; S.solverGhat = ghatRes; }
   try { S.solver = S.device ? new GpuSolver(S.device, ops, opts) : new CpuSolver(ops, opts); }
   catch (e) { console.warn('GPU solver failed, using CPU', e); S.device = null; S.solver = new CpuSolver(ops, opts); }
   stopAnneal(false);
@@ -118,15 +123,18 @@ function newSolver(reseed) {
 }
 
 function reseedNow() {
-  const c = S.carrier, s = S.solver; if (!c || !s) return;
-  if (S.seedMode === 'global') { globalSeed(); return; }
+  const c = S.carrier; if (!c || !S.solver) return;
+  if (S.seedMode === 'global') { globalField({ applySeed: true }); return; }
+  if (S.solverGhat) newSolver(false);                                           // local seed: back to the model metric
   const u0 = c.seedField(S.centre, S.valence, S.a, { radius: S.seedR, kind: S.seedKind, phaseDeg: S.seedPhi });
-  s.setInitial(u0);
+  S.solver.setInitial(u0);
   afterReseed(`v${S.valence} at ${S.centre} (${S.centreMode})`);
 }
 
-/** no seed: smoothest 6-RoSy on the carrier → stripe phases of its three families → hexagonal u0 everywhere.
- *  Both solves run in a module Worker on the base carrier and are lifted to the refined one (global_worker.js). */
+/** no seed: smoothest 6-RoSy on the carrier → (cones + size field ĝ, the field again in ĝ) → stripe phases of its
+ *  three families → hexagonal u0 everywhere. The solves run in a module Worker on the base carrier and are lifted to
+ *  the refined one (global_worker.js / global_pipeline.js). Also used for the display alone (stripes, field 5/7, ĝ
+ *  views in local mode), without touching the seed. */
 let gw = null, gwId = 0; const gwPending = new Map();
 function globalWorker() {
   if (gw) return gw;
@@ -135,24 +143,29 @@ function globalWorker() {
   gw.onerror = (e) => { for (const p of gwPending.values()) p.reject(new Error(e.message || 'worker error')); gwPending.clear(); gw = null; };
   return gw;
 }
-function runGlobalWorker(c, q0, onStage) {
+function runGlobalWorker(c, q0, a, mode, onStage) {
   return new Promise((resolve, reject) => {
     const id = ++gwId; gwPending.set(id, { resolve, reject, onStage });
-    const pack = (cc) => ({ n: cc.n, Fi: cc.Fi, Li: cc.Li, B: cc.boundary, V: cc.V, N: cc.N, F: cc.F });
+    const pack = (cc) => ({ name: cc.name, h: cc.h, hBase: cc.hBase, n: cc.n, Fi: cc.Fi, Li: cc.Li, K: cc.K, B: cc.boundary, V: cc.V, N: cc.N, F: cc.F, parents: cc.parents });
     const base = c.base || c, key = `${c.name}|${base.n}|${c.level || 0}|${c.n}`;
-    globalWorker().postMessage({ id, key, base: pack(base), fine: c.base ? pack(c) : null, q0 });
+    globalWorker().postMessage({ id, key, base: pack(base), fine: c.base ? pack(c) : null, q0, a, mode, edits: coneEditsArray() });
   });
 }
-async function globalSeed(force = false) {
-  const c = S.carrier, s = S.solver; if (!c || !s) return;
-  const a = S.a, req = ++S.globalReq;
-  if (!force && S.stripesRes && S.stripesRes.carrier === c && S.stripesRes.a === a) { s.setInitial(S.stripesRes.u0); afterReseed(S.stripesRes.sum); return; }
-  S.seedPending = true; $('btn-rosy').disabled = true;
-  const base = c.base || c, progress = (stage) => { setStatus(stage); $('ro-rosy').textContent = `${stage} (base carrier ${base.n} v${c.base ? `, refined ${c.n} v` : ''})`; $('ro-stripes').textContent = 'the solver waits for the seed'; try { if (S.solver) showStep(S.solver.steps); } catch (e) { /* ignore */ } };
+const CONE_LABEL = { greedy: 'cones from the curvature', field: "the field's own 5/7s as cones", uniform: 'uniform a' };
+/** the mode the worker runs in: the chosen cone mode in global mode, the model metric when only a display asks */
+const globalMode = () => (S.seedMode === 'global' ? S.coneMode : 'uniform');
+async function globalField({ applySeed = true, force = false } = {}) {
+  const c = S.carrier; if (!c || !S.solver) return;
+  const a = S.a, mode = globalMode(), R0 = S.stripesRes, editsKey = JSON.stringify(coneEditsArray());
+  if (!force && R0 && R0.carrier === c && R0.a === a && R0.mode === mode && R0.editsKey === editsKey) { if (applySeed) applyGlobalSeed(R0); return; }
+  if (S.globalBusy && !applySeed) return;                                       // a display request while one is running: the result will come
+  const req = ++S.globalReq; S.globalBusy = true;
+  if (applySeed) { S.seedPending = true; $('btn-rosy').disabled = true; }
+  const base = c.base || c, progress = (stage) => { setStatus(stage); try { if (S.solver) showStep(S.solver.steps); } catch (e) { /* ignore */ } };
   progress('starting the rotation-field worker…');
   try {
     const t0 = performance.now();
-    const d = await runGlobalWorker(c, 4 * Math.PI / (SQ3 * a), (stage) => { if (req === S.globalReq) progress(stage); });
+    const d = await runGlobalWorker(c, 4 * Math.PI / (SQ3 * a), a, mode, (stage) => { if (req === S.globalReq) progress(stage); });
     if (req !== S.globalReq || S.carrier !== c) return;                      // superseded by a newer request
     const ms = performance.now() - t0;
     const hist = {}; for (const sg of d.singular) hist[sg.valence] = (hist[sg.valence] || 0) + 1;
@@ -161,41 +174,60 @@ async function globalSeed(force = false) {
     const branch = d.branch.map(b => { const f = b.face, ids = [bc.Fi[3 * f], bc.Fi[3 * f + 1], bc.Fi[3 * f + 2]]; return { ...b, pos: cen(bc.V, ids), nrm: cen(bc.N, ids) }; });
     S.rosy = { carrier: c, list, hist, theta: d.theta, nb0: d.nb0, dirs: [0, 1, 2].map(k => directionsFromNb0(c, d.theta, d.nb0, 6, k)), density: null };
     const np = branch.filter(b => b.winding > 0).length, nm = branch.length - np;
-    const sum = `global field · ${d.singular.length} field singularities · ${branch.length} branch points`;
-    S.stripesRes = { carrier: c, a, u0: d.u0, branch, sum, faces: d.stripeFaces || null };
-    const omega6 = c.omega * 180 / Math.PI / 60, parts = Object.entries(hist).map(([v, k]) => `${k} × v${v}`).join(', ') || 'none';
-    const tt = (k) => d.t[k] !== undefined ? `${(d.t[k] / 1000).toFixed(1)} s` : '—';
-    $('ro-rosy').innerHTML = `rotation field (on the base carrier, ${d.nBase} v${c.base ? `, lifted to ${c.n} v` : ''}): ${d.singular.length} singular faces (${parts}) · Σ index = ${d.sumIndex}/6 vs Ω/60° = ${omega6.toFixed(1)} ${Math.abs(d.sumIndex - omega6) < 0.6 ? '✓' : '(rim turning not counted)'} · ${tt('rosy')}${c.base ? ` + lift ${tt('lift')}` : ''}`;
-    $('ro-stripes').innerHTML = `stripe phases at a = ${a.toFixed(2)}: ${branch.length} branch points (+${np} / −${nm}) ≈ ${Math.round(branch.length / 2)} dislocations forced by the geometry${c.base ? ` (${d.branchBase} on the base)` : ''} · worst family match ${(d.worstMatch * 180 / Math.PI).toFixed(0)}° · ${tt('stripes')}${c.base ? ` + lift ${tt('liftStripes')}` : ''} · total ${(ms / 1000).toFixed(1)} s`;
+    const ghat = !!d.phi, ci = d.coneInfo, active = d.cones.filter(q => q.on !== false), coneHist = active.reduce((h, q) => (h[q.valence] = (h[q.valence] || 0) + 1, h), {});
+    const sum = `global field${ghat ? ` · ĝ with ${active.length} cones${ci && ci.constrained ? ', aligned' : ''}` : ''} · ${branch.length} branch points`;
+    S.stripesRes = { carrier: c, a, mode, editsKey, u0: d.u0, branch, sum, faces: d.stripeFaces || null, phi: d.phi || null, cones: d.cones, coneInfo: ci, ops: null };
+    let resWarn = '';                                                         // the ĝ operators: warn when a steep size field is under-resolved
+    if (ghat && ci) { const ops = c.conformalOps(d.phi, a); S.stripesRes.ops = ops; if (ops.underResolvedPct > 2) resWarn = ` · ${ops.underResolvedPct.toFixed(1)} % of the ĝ edges longer than a/6: refine the carrier (×2) or lower the density`; }
     view.setRosy(S.rosy.dirs, 0.4 * a);
-    if (S.carrierView === 'rosysing' || S.carrierView === 'stripes') updateCarrierColors();
-    s.setInitial(d.u0);
-    afterReseed(sum);
-    setStatus(`seeded from the rotation field (${d.singular.length} singularities, ${branch.length} branch points, ${(ms / 1000).toFixed(1)} s)`);
-  } catch (e) { console.error(e); setStatus('rotation field failed: ' + e.message); $('ro-rosy').textContent = 'rotation field failed: ' + e.message; }
-  finally { if (req === S.globalReq) { S.seedPending = false; $('btn-rosy').disabled = false; if (S.playing) pump(); } }
+    if (S.carrierView === 'rosysing' || S.carrierView === 'stripes' || S.carrierView === 'phi') updateCarrierColors();
+    if (applySeed) {
+      applyGlobalSeed(S.stripesRes);
+      setStatus(`seeded from the rotation field${ghat ? ` in ĝ (${d.cones.length} cones)` : ''} · ${d.singular.length} singularities, ${branch.length} branch points, ${(ms / 1000).toFixed(1)} s${resWarn}`);
+    } else setStatus(`rotation field computed for the display (${(ms / 1000).toFixed(1)} s) — the seed is unchanged`);
+  } catch (e) { console.error(e); setStatus('rotation field failed: ' + e.message); }
+  finally { if (req === S.globalReq) { S.globalBusy = false; if (applySeed) { S.seedPending = false; $('btn-rosy').disabled = false; if (S.playing) pump(); } } }
+}
+/** start the solver from a global result: operators in ĝ when it carries a size field, in the model metric otherwise */
+function applyGlobalSeed(R) {
+  const wantGhat = !!R.phi;
+  if ((wantGhat && S.solverGhat !== R) || (!wantGhat && S.solverGhat)) newSolver(false, wantGhat ? R : null);
+  S.solver.setInitial(R.u0);
+  afterReseed(R.sum);
 }
 const cen = (A, ids) => [0, 1, 2].map(k => (A[3 * ids[0] + k] + A[3 * ids[1] + k] + A[3 * ids[2] + k]) / 3);
 
+/** the cone editor was removed (2026-10-18): the worker still accepts edits of the automatic cones, none are sent */
+function coneEditsArray() { return []; }
+
 function afterReseed(sum) {
-  stopAnneal(true);
+  stopAnneal(true); S.pins = []; S.healReport = null; renderHealReadout();
   S.history = []; S.lastExtract = -1; S.lat = null; S.summary = null; S.strands = null; S.es = null; S.orient = null; S.shownStep = -1; S.scrubbed = false;
   view.setLattice(null, null); view.setLaths(null, null, {}); view.setStrain(null); view.setOrientation(null); clearSelection(false); updateDirectionReadout();
   setSum('sing', sum);
   updateProbe(); updatePrediction();
   showStep(0); updateLatticeReadout(); drawChart();
+  if (S.solver && S.solver.steps < S.target) pump();
 }
 
-const yieldTask = () => new Promise(r => setTimeout(r, 0));
+// yield to the event loop between batches: a timer in the foreground (keeps rendering smooth); a MessageChannel message
+// in a hidden tab, where Chrome throttles timers to 1 Hz (1/min after 5 min) and the solver would otherwise crawl
+const yieldChannel = new MessageChannel(); const yieldQueue = []; yieldChannel.port1.onmessage = () => { const r = yieldQueue.shift(); if (r) r(); };
+const yieldTask = () => document.hidden ? new Promise(r => { yieldQueue.push(r); yieldChannel.port2.postMessage(0); }) : new Promise(r => setTimeout(r, 0));
 
 async function pump() {
   // advance the solver toward the target in ~120 ms batches, yielding to the event loop (rendering) between batches
   if (S.pumping) return; S.pumping = true;
   try {
     while (S.solver && S.solver.steps < S.target) {
-      if (S.seedPending) break;                                               // the global seed is still being solved: nothing to step yet
+      if (S.seedPending || S.healing) break;                                  // the global seed is still being solved / a heal pass is stepping: nothing to step here
       const s = S.solver, t0 = performance.now(), n = Math.min(S.spfAuto || S.spf, S.target - s.steps);
-      try { await s.step(n); } catch (e) { console.error(e); setStatus('solver error: ' + e.message); S.playing = false; S.target = s.steps; break; }
+      try { await s.step(n); } catch (e) {
+        if (s !== S.solver) { await yieldTask(); continue; }                   // the solver was replaced under this step (new carrier, new seed): carry on with the new one
+        console.error(e); setStatus('solver error: ' + e.message); S.playing = false; S.target = s.steps; break;
+      }
+      if (s !== S.solver) { await yieldTask(); continue; }
+      if (S.pins.length) applyPins(s, S.pins);
       const ms = performance.now() - t0; S.rate = n / Math.max(ms, 1e-3) * 1000;
       S.spfAuto = Math.max(4, Math.min(S.spf, Math.round(S.rate * 0.12)));
       try {
@@ -214,7 +246,6 @@ function tick() {
   if (S.playing && s.steps >= S.target && S.target < S.maxSteps) { S.target = Math.min(S.maxSteps, S.target + 50); syncStepsUI(); }
   if (s.steps < S.target) pump();
   else if (S.shownStep !== S.target && !S.pumping) showStep(S.target);
-  $('ro-steps').textContent = `${s.steps} computed · t = ${s.t.toFixed(0)}` + (S.rate ? ` · ${S.rate.toFixed(0)} steps/s` : '') + (Number.isFinite(s.lastRelRes) ? ` · PCG relres ${s.lastRelRes.toExponential(1)}` : '');
   $('ro-cg').textContent = s.backend === 'webgpu' ? 'fixed iterations on the GPU' : `relres ${Number.isFinite(s.lastRelRes) ? s.lastRelRes.toExponential(1) : '—'}`;
   setSum('solve', `${s.steps} / ${S.maxSteps}${S.playing || s.steps < S.target ? ' · running' : ''}`);
 }
@@ -226,7 +257,7 @@ function showStep(step) {
   if (S.carrierView === 'u') view.setFieldColors(u, 'viridis', U_RANGE[0], U_RANGE[1]);
   if (step < s.steps) { extract(u, false); S.scrubbed = true; }               // scrubbing back: lattice of that snapshot
   else if (S.scrubbed) { extract(s.u, false); S.scrubbed = false; }           // back at the live state (periodic extraction otherwise)
-  $('st-run').textContent = (S.seedPending ? '· waiting for the global seed ' : '') + `· step ${step} / ${s.steps} (t = ${s.t.toFixed(0)}) · ${S.seedMode === 'global' ? 'global seed' : `v${S.valence} seed`} · a = ${S.a.toFixed(3)}` + (S.anneal.active ? ` · anneal from ${S.anneal.startedAt}` : '') + (S.playing || s.steps < S.target ? ' · running' : '');
+  $('st-run').textContent = (S.seedPending ? '· waiting for the global seed ' : '') + `· step ${step} / ${s.steps} (t = ${s.t.toFixed(0)}) · ${S.seedMode === 'global' ? (S.solverGhat ? 'global seed in ĝ' : 'global seed') : `v${S.valence} seed`} · a = ${S.a.toFixed(3)}` + (S.anneal.active ? ` · anneal from ${S.anneal.startedAt}` : '') + (S.playing || s.steps < S.target ? ' · running' : '');
   updateGrowthLegend(); drawChart();
 }
 
@@ -276,6 +307,34 @@ function updateDirectionReadout() {
   el.innerHTML = parts.join('<br>');
 }
 
+// ------------------------------------------------------------------ healing bound 5–7 pairs (heal.js)
+async function healNow() {
+  const s = S.solver, c = S.carrier; if (!s || !c || S.healing || S.seedPending) return;
+  S.healing = true; S.playing = false; $('btn-run').textContent = 'Run'; $('btn-heal').disabled = true;
+  while (S.pumping) await yieldTask();                                          // let the running batch finish
+  const el = $('ro-heal'), lines = []; let shown = 0;
+  setStage('i-heal', 'warn');
+  const log = (m) => { lines.push(m); el.textContent = lines.slice(-4).join(' · '); setStatus('healing: ' + m); };
+  const onStep = async (sv) => { if (S.pins.length) applyPins(sv, S.pins); if (sv.steps - shown >= 100) { shown = sv.steps; if (S.carrierView === 'u') view.setFieldColors(sv.u, 'viridis', U_RANGE[0], U_RANGE[1]); } await yieldTask(); };
+  try {
+    const rep = await healPass(s, c, S.a, { hold: 60, every: 5, release: 400, max: 40, push: 0.4, pin: $('ck-heal-pin').checked, pins: S.pins, log, onStep });
+    S.healReport = rep;
+  } catch (e) { console.error(e); setStatus('heal error: ' + e.message); S.healError = e.message; }
+  S.healing = false; $('btn-heal').disabled = false;
+  if (s === S.solver) { S.target = Math.max(S.target, s.steps); if (S.target > S.maxSteps) { S.maxSteps = S.target; $('nb-max').value = S.maxSteps; $('sl-steps').max = S.maxSteps; } syncStepsUI(); extract(s.u, true); showStep(s.steps); }
+  renderHealReadout();
+}
+function clearPins() { S.pins = []; renderHealReadout(); }
+function renderHealReadout() {
+  const el = $('ro-heal'), R = S.healReport; $('btn-pins-clear').hidden = !S.pins.length;
+  if (S.healError) { el.textContent = 'heal error: ' + S.healError; S.healError = null; setStage('i-heal', 'bad'); return; }
+  if (!R) { el.textContent = S.pins.length ? `${S.pins.length} pinned` : 'not run yet — click Heal 5-7-5 once the surface is covered'; setStage('i-heal', S.pins.length ? 'warn' : 'idle'); return; }
+  setStage('i-heal', S.pins.length || (!R.healed && R.tried) ? 'warn' : 'ok');
+  const m = R.motifs || {}, left = ['tri', 'flip'].filter(k => m[k]).map(k => `${m[k]} ${k === 'tri' ? '5-5-7 triangle' : 'flip'}${m[k] > 1 ? 's' : ''}`);
+  const found = Object.entries(m).map(([k, v]) => `${v} ${k}`).join(', ') || 'none';
+  el.textContent = `found ${found} · ${R.healed} healed of ${R.tried} tried` + (R.pinned ? ` · ${R.pinned} pinned` : '') + (S.pins.length ? ` · ${S.pins.length} pin${S.pins.length > 1 ? 's' : ''} held` : '') + (m.tri ? ` · ${m.tri} 5-5-7 triangle${m.tri > 1 ? 's' : ''} left to the anneal` : '');
+}
+
 // ------------------------------------------------------------------ two-stage schedule (grow → anneal)
 function checkAnneal() {
   const A = S.anneal, s = S.solver; if (!A.on || A.active || !s) return;
@@ -303,6 +362,7 @@ function renderAnnealReadout() {
   const A = S.anneal, el = $('ro-anneal');
   el.innerHTML = !A.on ? 'off' : A.active ? `<span class="warn">annealing since step ${A.startedAt} at r = ${A.r2}, b = ${A.b2}</span>` : A.when === 'step' ? `armed: at step ${A.step}` : 'armed: when the peak count stops growing';
   $('nb-anneal-step').hidden = A.when !== 'step';
+  setStage('i-anneal', !A.on ? 'idle' : A.active ? 'warn' : 'ok');
 }
 
 function updateLaths() {
@@ -334,27 +394,29 @@ function resolveSelection() {
 }
 function selectLath(si) {
   S.selLath = si; S.selLathKey = lathKey(si); S.selVertex = -1; S.selVertexKey = -1;
-  view.setSelectedVertex(-1); updateLaths(); updateSelectionReadout();
+  view.setSelectedVertex(-1); updateLaths(); reportSelection();
 }
 function selectVertex(peak) {
   S.selVertex = peak; S.selVertexKey = S.lat ? S.lat.peaks[peak] : -1; S.selLath = -1; S.selLathKey = null;
-  view.setSelectedVertex(peak); updateLaths(); updateSelectionReadout();
+  view.setSelectedVertex(peak); updateLaths(); reportSelection();
 }
 function clearSelection(redraw = true) {
   S.selLath = -1; S.selLathKey = null; S.selVertex = -1; S.selVertexKey = -1;
   if (redraw) { view.setSelectedVertex(-1); updateLaths(); }
   updateSelectionReadout();
 }
-function updateSelectionReadout() {
-  const el = $('ro-selection'), lat = S.lat, st = S.strands;
+/** the selection read-out left the panel (2026-10-18): a click on a lath or a vertex reports in the status bar */
+function updateSelectionReadout() { }
+function reportSelection() {
+  const lat = S.lat, st = S.strands;
   if (S.selLath >= 0 && st) {
     const s = st.strands[S.selLath], fam = st.family[S.selLath];
     let overs = 0; for (let i = 0; i < s.knots.length; i++) if (st.over(S.selLath, i)) overs++;
-    el.innerHTML = `<span class="sw" style="background:${FAMILY_HEX[fam >= 0 ? fam % 3 : 3]}"></span>lath #${S.selLath} · family ${fam >= 0 ? 'ABC'[fam % 3] : '—'} · ${s.knots.length} knots (${overs} over / ${s.knots.length - overs} under) · ${s.closed ? 'closed' : 'open'}`;
+    setStatus(`lath #${S.selLath} · family ${fam >= 0 ? 'ABC'[fam % 3] : '—'} · ${s.knots.length} knots (${overs} over / ${s.knots.length - overs} under) · ${s.closed ? 'closed' : 'open'}`);
   } else if (S.selVertex >= 0 && lat) {
     const i = S.selVertex, v = lat.valence[i];
-    el.innerHTML = `<span class="sw" style="background:${valenceHex(v)}"></span>lattice vertex ${i} (OBJ v${i + 1}) · carrier vertex ${lat.peaks[i]} · valence ${v} (charge ${6 - v >= 0 ? '+' : ''}${6 - v}) · ${lat.interior[i] ? 'interior' : 'open link (front or rim)'}`;
-  } else el.textContent = 'click a lath to follow its path · click a vertex to select it · Esc clears';
+    setStatus(`lattice vertex ${i} (OBJ v${i + 1}) · carrier vertex ${lat.peaks[i]} · valence ${v} (charge ${6 - v >= 0 ? '+' : ''}${6 - v}) · ${lat.interior[i] ? 'interior' : 'open link (front or rim)'}`);
+  }
 }
 
 function renderValenceChips() {
@@ -376,18 +438,24 @@ function renderValenceChips() {
 
 function updateLatticeReadout() {
   const lat = S.lat, cs = S.summary;
-  if (!lat) { $('ro-lattice').textContent = 'no lattice yet'; $('ro-strands').textContent = ''; $('st-lat').textContent = ''; $('growth-text').textContent = 'no lattice yet — peaks · interior · singular are plotted against the step as the pattern grows'; renderValenceChips(); updateSelectionReadout(); updateGrowthLegend(); return; }
-  const c = S.carrier, hist = Object.entries(cs.hist).sort((x, y) => +x[0] - +y[0]).map(([v, k]) => `v${v}: ${k}${+v !== 6 ? ` (charge ${6 - v >= 0 ? '+' : ''}${6 - v})` : ''}`).join('   ');
-  $('ro-lattice').textContent = `peaks ${lat.peaks.length} · interior (closed link) ${cs.nInterior} · expected sites ≈ ${sites().toFixed(0)}\n${hist}\nΣ(6 − n) over interior peaks = ${cs.charge}    (Ω / 60° = ${(c.omega * 180 / Math.PI / 60).toFixed(2)})`;
+  if (!lat) {
+    const dead = S.solver && S.solver.steps >= 1000 && S.shownStep >= 1000;
+    $('ro-strands').textContent = ''; $('st-lat').textContent = '';
+    $('growth-text').innerHTML = dead ? '<span class="bad">no lattice at this step — the pattern died out: raise r or b (4 Solve) or re-seed</span>' : 'no lattice yet — peaks · interior · singular are plotted against the step as the pattern grows';
+    setStage('i-growth', dead ? 'bad' : 'idle'); renderValenceChips(); updateGrowthLegend(); return;
+  }
+  const c = S.carrier;
   const st = S.strands;
   $('ro-strands').innerHTML = st ? `laths: ${st.strands.length} strands (${st.strands.filter(x => x.closed).length} closed) · families ${[0, 1, 2].map(f => `<span class="sw" style="background:${FAMILY_HEX[f]}"></span>${st.family.filter(x => x === f).length}`).join(' ')} · ${st.edges.length} knots · parity conflicts ${st.parityConflicts} · colour conflicts ${st.colourConflicts}` : '';
   $('st-lat').textContent = `· ${lat.peaks.length} peaks · ${cs.nInterior} interior · Σ(6−n) = ${cs.charge}`;
-  renderValenceChips(); updateSelectionReadout(); updateGrowthLegend();
+  renderValenceChips(); updateGrowthLegend();
   const want = Math.round(c.omega * 180 / Math.PI / 60), ideal = cs.singular.length === 1 && cs.charge === want;
   const P = S.pred, i = P ? Math.min(P.floor.length - 1, Math.round((S.shownStep >= 0 ? S.shownStep : 0) / 50)) : -1, need = P && i >= 0 ? P.floor[i] : null;
+  const gap = predictionGap();
   $('growth-text').innerHTML = `${cs.singular.length} singular · Σ(6−n) = ${cs.charge} over ${cs.nInterior} interior` +
     (need !== null ? ` · curvature inside the front needs ≥ ${need}` : '') +
-    (ideal ? ` · <span class="ok">ideal: one singular peak, Σ(6−n) = round(Ω/60°) = ${want}</span>` : '') + predictionGap();
+    (ideal ? ` · <span class="ok">ideal: one singular peak, Σ(6−n) = round(Ω/60°) = ${want}</span>` : '') + gap;
+  setStage('i-growth', !ideal && /class="warn"/.test(gap) ? 'warn' : 'ok');
 }
 
 /** legend of the growth strip with the latest values (the chart itself has no room for it in the panel) */
@@ -416,24 +484,34 @@ function predictionGap() {
 function updateCarrierColors() {
   const c = S.carrier; if (!c) return;
   const mode = S.carrierView, flat = () => view.setFlatColor(hexToRgb(getComputedStyle(document.documentElement).getPropertyValue('--mesh').trim()));
-  const needGlobal = 'needs the global rotation field: 3 Singularity → global rotation field → Solve';
+  const R = S.stripesRes, have = R && R.carrier === c && R.a === S.a && R.mode === globalMode();
+  // the field, the stripes and φ exist for every surface, with or without a centre: compute them for the display when missing
+  const ask = () => { if (!have) globalField({ applySeed: false }); return `computing the rotation field${S.seedMode !== 'global' ? ' for the display (the local seed stays)' : ''}…`; };
   if (mode !== 'stripes') view.setCarrierMode('vertex');
   if (mode === 'u') { S.shownStep = -1; updateCarrierUI(''); return; }
   if (mode === 'none') { flat(); updateCarrierUI(''); return; }
   if (mode === 'stripes') {
-    const R = S.stripesRes;
-    if (!R || R.carrier !== c || !R.faces) { flat(); updateCarrierUI(needGlobal); return; }
+    if (!R || R.carrier !== c || !R.faces) { flat(); updateCarrierUI(ask()); return; }
     if (S.stripesShown !== R.faces) { view.setStripes(R.faces); S.stripesShown = R.faces; }
     view.setCarrierMode('stripes');
-    updateCarrierUI(`the seed's three stripe phases (before SH), drawn where each family's laths would run (band = lath width) · a band that stops is a branch point; two families stopping together make a 5–7 pair · around a field 5 or 7 the colours swap across a seam${Math.abs(R.a - S.a) > 1e-9 ? ` · <span class="warn">phases from a = ${R.a.toFixed(2)}</span>` : ''}`);
+    updateCarrierUI(`the seed's three stripe phases (before SH)${R.phi ? ', integrated in ĝ' : ''}, drawn where each family's laths would run (band = lath width) · a band that stops is a branch point; two families stopping together make a 5–7 pair · around a field 5 or 7 the colours swap across a seam${Math.abs(R.a - S.a) > 1e-9 ? ` · <span class="warn">phases from a = ${R.a.toFixed(2)}</span>` : ''}${!have ? ' · ' + ask() : ''}`);
     return;
   }
   if (mode === 'rosysing') {
     const d = fieldChargeDensity();
-    if (!d) { flat(); updateCarrierUI(needGlobal); return; }
+    if (!d) { flat(); updateCarrierUI(ask()); return; }
     view.setFieldColors(d.vals, 'coolwarm', -d.v, d.v);
     const parts = Object.entries(S.rosy.hist).map(([v, k]) => `${k} × ${v}`).join(', ') || 'none';
-    updateCarrierUI(`singularities of the rotation field (${parts}): red = 5 (+60°), blue = 7 (−60°); full colour at the singular face, fading within about two lattice edges (σ = 0.8 a along the surface)`);
+    updateCarrierUI(`singularities of the rotation field${R && R.phi ? ' in ĝ (they sit at the cones)' : ''} (${parts}): red = 5 (+60°), blue = 7 (−60°); full colour at the singular face, fading within about two lattice edges (σ = 0.8 a along the surface)${!have ? ' · ' + ask() : ''}`);
+    return;
+  }
+  if (mode === 'phi') {
+    if (!R || R.carrier !== c || !R.phi) { flat(); updateCarrierUI(S.seedMode === 'global' && S.coneMode === 'uniform' ? 'no size field: 3 Singularity → size field ĝ → cones' : (R && R.carrier === c && !R.phi && S.seedMode !== 'global') ? 'the size field belongs to the global seed: 3 Singularity → global rotation field (cones ≠ uniform)' : ask()); return; }
+    const vals = new Float64Array(c.n); let v = 0; for (let i = 0; i < c.n; i++) { vals[i] = 1 - Math.exp(-R.phi[i]); v = Math.max(v, Math.abs(vals[i])); }
+    const lim = Math.min(0.5, Math.max(0.1, v));
+    view.setFieldColors(vals, 'coolwarm', -lim, lim);
+    const e = R.coneInfo && R.coneInfo.edges;
+    updateCarrierUI(`lattice edge a·e^{−φ} of the size field: red = tighter than a (near the 5s), blue = wider (near the 7s), colour full at ±${(100 * lim).toFixed(0)} %${e ? ` · p5–p95 ${e.p5.toFixed(2)}–${e.p95.toFixed(2)} a` : ''} · the lattice is regular in ĝ, so this is the edge it will have on the model${!have ? ' · ' + ask() : ''}`);
     return;
   }
   const vals = new Float64Array(c.n);
@@ -488,8 +566,7 @@ function updateDensityReadout() {
   const kq = 1 + (q0 * c.h) ** 2 / 48;                                           // selected k / q0 of the uncorrected operator (c = 1/24, see solver_cpu.js)
   $('ro-disp').textContent = `${epa.toFixed(1)} edges per a: uncorrected edge = ${(1 / kq).toFixed(3)} a` + (S.disp ? ` → corrected, edge = a` : ` (sites, pitch and strain are then ${(100 * (kq - 1)).toFixed(1)} % off)`);
   $('nb-sites').value = sites().toFixed(0);
-  const [lo, hi] = aRange();
-  $('ro-refine').textContent = `h = ${c.h.toFixed(3)} · ${c.n} v · a from ${lo.toFixed(2)} to ${hi.toFixed(2)} (${(c.area / (SQ3 / 2 * lo * lo)).toFixed(0)} to ${(c.area / (SQ3 / 2 * hi * hi)).toFixed(0)} sites)`;
+  setStage('i-density', epa >= 6 && epa <= 12 ? 'ok' : 'warn');
   setSum('density', `a = ${S.a.toFixed(2)} · ≈ ${sites().toFixed(0)} sites${S.refine ? ` · ×${2 ** S.refine}` : ''}`);
   drawDensityDiagram();
 }
@@ -506,7 +583,7 @@ function renderRefineChips() {
 async function setRefine(level) {
   const base = S.baseCarrier; if (!base || level === S.refine) return;
   const n = Math.round(base.n * 4 ** level);
-  setStatus(`refining ×${2 ** level} → ${n} vertices…`); await yieldTask(); await new Promise(r => requestAnimationFrame(r));
+  setStatus(`refining ×${2 ** level} → ${n} vertices…`); await yieldTask(); await new Promise(r => { requestAnimationFrame(r); setTimeout(r, 60); });   // a hidden tab gets no frames: do not wait for one
   const t0 = performance.now();
   try {
     const c = base.refined(level), keepValence = S.valence;                  // centre ids survive (base vertices keep their ids)
@@ -525,7 +602,7 @@ function setSide(sign) {
 function onDensityChange(a) {
   const [lo, hi] = aRange(); S.a = Math.min(hi, Math.max(lo, a));
   $('sl-a').value = sliderFromA(S.a); $('nb-a').value = S.a.toFixed(3);
-  updateDensityReadout(); detect(); applyCgIters(); if (S.carrierView === 'Ks' || S.carrierView === 'rosysing' || S.carrierView === 'stripes') updateCarrierColors();   // field 5/7 spreads over σ = 0.8 a
+  updateDensityReadout(); detect(); applyCgIters(); if (S.carrierView === 'Ks' || S.carrierView === 'rosysing' || S.carrierView === 'stripes' || S.carrierView === 'phi') updateCarrierColors();   // field 5/7 spreads over σ = 0.8 a
   S.geo = null; S.solver.setParams({ a: S.a }); reseedNow();
   setStatus(`q0 = ${(4 * Math.PI / (SQ3 * S.a)).toFixed(3)} · ${sites().toFixed(0)} sites expected`);
 }
@@ -536,7 +613,7 @@ function setCentre(idx, mode) {
   setStatus(`centre ${mode}: vertex ${idx} · defect ${(S.carrier.K[idx] * 180 / Math.PI).toFixed(1)}°`);
 }
 
-function syncStepsUI() { $('sl-steps').value = S.target; $('out-steps').value = S.target; }
+function syncStepsUI() { $('sl-steps').value = S.target; $('out-steps').value = S.target; if (S.solver && S.solver.steps < S.target) pump(); }   // start at once: the tick timer is throttled in a hidden tab
 
 function nearestCarrierVertex(p) {
   const c = S.carrier; if (!c) return -1; let best = -1, bd = Infinity;
@@ -580,13 +657,12 @@ function setLayer(layer, on) {
 }
 /** intrinsic Delaunay triangulation on the model (built when first shown: tracing the flipped edges takes ~0.1–2 s) */
 function updateMeshLayer() {
-  const c = S.carrier, el = $('ro-mesh');
-  if (!c || !view.visible.wire) { view.setMesh(null); el.hidden = true; return; }
-  const t0 = performance.now(), m = c.intrinsicEdgeLines(0);
+  const c = S.carrier;
+  if (!c || !view.visible.wire) { view.setMesh(null); return; }
+  const m = c.intrinsicEdgeLines(0);
   view.setMesh(m);
   const tot = m.nShared + m.nFlipped;
-  el.hidden = false;
-  el.innerHTML = `intrinsic Delaunay mesh: ${tot.toLocaleString('en')} edges, <span class="cm">${m.nFlipped} flipped (${(100 * m.nFlipped / Math.max(tot, 1)).toFixed(2)} %)</span> — each a straight line in the surface (geodesic), drawn across the faces it crosses${m.failed ? ` · ${m.failed} not traced (chords)` : ''} · the Laplacian uses these edges, so every interior cotan weight is ≥ 0 · ${(performance.now() - t0).toFixed(0)} ms`;
+  setStatus(`intrinsic Delaunay mesh: ${tot.toLocaleString('en')} edges, ${m.nFlipped} flipped (${(100 * m.nFlipped / Math.max(tot, 1)).toFixed(2)} %) — geodesics across the faces${m.failed ? ` · ${m.failed} not traced` : ''}`);
 }
 function updateProbe() {
   const c = S.carrier;
@@ -873,29 +949,6 @@ function drawDensityDiagram() {
   svg.appendChild(svgEl('text', { x: gx + gw, y: gy + 30, 'text-anchor': 'end' }, `h = ${c.h.toFixed(3)}  (mesh drawn to scale)`));
 }
 
-// ------------------------------------------------------------------ singularity: detected curvature against the valence
-function drawChargeDiagram() {
-  const svg = $('charge-svg'), c = S.carrier, d = S.detected; if (!svg || !c || !d) return;
-  svg.innerHTML = '';
-  const css = getComputedStyle(document.documentElement), cv_ = (n) => css.getPropertyValue(n).trim();
-  const acc = cv_('--accent'), fg = cv_('--fg'), border = cv_('--border');
-  const x0 = 92, x1 = 360, V = (n) => x0 + (x1 - x0) * (n - 3) / 6, y = 44;
-  const om = d.info.omegaDeg, nEff = 6 - om / 60;
-  svg.appendChild(svgEl('text', { x: 372, y: 11, 'text-anchor': 'end', class: 'acc' }, `Ω = ∫K = ${om.toFixed(0)}° → 6 − Ω/60° = ${nEff.toFixed(2)} → v${d.valence}`));
-  svg.appendChild(svgEl('line', { x1: V(3) - 12, y1: y, x2: V(9) + 12, y2: y, stroke: border, 'stroke-width': 1.5 }));
-  for (const [t, yy] of [['valence n', y + 4], ['charge 6−n', y + 22], ['cone n·60°', y + 36]]) svg.appendChild(svgEl('text', { x: 0, y: yy }, t));
-  for (let n = 3; n <= 9; n++) {
-    const on = n === S.valence;
-    svg.appendChild(svgEl('circle', { cx: V(n), cy: y, r: on ? 10 : 8, fill: valenceHex(n), stroke: on ? fg : border, 'stroke-width': on ? 2 : 1, opacity: n === 6 ? 0.6 : 1 }));
-    svg.appendChild(svgEl('text', { x: V(n), y: y + 3.5, 'text-anchor': 'middle', style: 'font-weight:600; fill:#1b1d1f' }, String(n)));
-    svg.appendChild(svgEl('text', { x: V(n), y: y + 22, 'text-anchor': 'middle', class: on ? 'fg' : '' }, `${6 - n > 0 ? '+' : ''}${6 - n}`));
-    svg.appendChild(svgEl('text', { x: V(n), y: y + 36, 'text-anchor': 'middle', class: on ? 'fg' : '' }, `${n * 60}°`));
-  }
-  // the detected curvature, as a position on the same axis
-  const xm = V(Math.max(2.6, Math.min(9.4, nEff)));
-  svg.appendChild(svgEl('path', { d: `M${xm} ${y - 12}l-5 -9h10z`, fill: acc }));
-  svg.appendChild(svgEl('line', { x1: xm, y1: y - 12, x2: xm, y2: y + 12, stroke: acc, 'stroke-width': 1, 'stroke-dasharray': '2 2' }));
-}
 function drawOrientLegend() {
   const svg = $('orient-legend'); if (!svg) return; svg.innerHTML = '';
   const n = 24, w = 120, base = hexToRgb(getComputedStyle(document.documentElement).getPropertyValue('--knot').trim());
@@ -907,21 +960,28 @@ function drawOrientLegend() {
 // ------------------------------------------------------------------ hover cards (every ⓘ, and data-tip="<template id>")
 function initTips() {
   const card = document.createElement('div'); card.id = 'tipcard'; card.setAttribute('role', 'tooltip'); card.hidden = true; document.body.appendChild(card);
-  let timer = 0, owner = null;
+  let timer = 0, owner = null, moved = [];
   const place = (el) => {
     const r = el.getBoundingClientRect(), cw = card.offsetWidth, ch = card.offsetHeight;
     let x = Math.min(r.left, window.innerWidth - 8 - cw), y = r.bottom + 6;
     if (y + ch > window.innerHeight - 8) y = Math.max(8, r.top - 6 - ch);
     card.style.left = Math.max(8, x) + 'px'; card.style.top = y + 'px';
   };
+  // a status mark (data-src) lends its read-outs to the card while it is open — they keep updating there — and takes them back on hide
+  const restore = () => { for (const [node, parent] of moved) parent.appendChild(node); moved = []; };
   const show = (el) => {
+    restore();
     const tpl = el.dataset.tip ? document.getElementById(el.dataset.tip) : null;
-    card.innerHTML = '';
-    if (tpl) card.appendChild(tpl.content.cloneNode(true)); else card.textContent = el.dataset.tipText || '';
+    card.innerHTML = ''; card.classList.toggle('stat', !!el.dataset.src);
+    if (el.dataset.src) {
+      for (const id of el.dataset.src.split(/\s+/)) { const node = $(id); if (node) { moved.push([node, node.parentNode]); card.appendChild(node); } }
+      if (el.dataset.tipText) { const p = document.createElement('p'); p.className = 'dim'; p.textContent = el.dataset.tipText; card.appendChild(p); }
+    } else if (tpl) card.appendChild(tpl.content.cloneNode(true)); else card.textContent = el.dataset.tipText || '';
     for (const b of card.querySelectorAll('[data-tip-range]')) b.textContent = Math.round(100 * S.strainRange);
     card.hidden = false; owner = el; place(el);
   };
-  const hide = () => { clearTimeout(timer); card.hidden = true; owner = null; };
+  const hide = () => { clearTimeout(timer); card.hidden = true; owner = null; restore(); };
+  tipRefresh = (el) => { if (owner === el && !card.hidden) place(el); };
   for (const el of document.querySelectorAll('.info, [data-tip]')) {
     if (el.title) { el.dataset.tipText = el.title; el.removeAttribute('title'); }
     if (el.classList.contains('info') && !el.getAttribute('aria-label')) el.setAttribute('aria-label', 'more information');
@@ -934,7 +994,11 @@ function initTips() {
   }
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
   $('panel').addEventListener('scroll', hide, { passive: true });
+  document.querySelector('#display .body').addEventListener('scroll', hide, { passive: true });
 }
+let tipRefresh = () => {};
+/** status marks: an ⓘ that carries a read-out, coloured by how things stand — ok (green), warn (orange), bad (red), idle (grey) */
+function setStage(id, stage) { const el = $(id); if (!el) return; if (el.dataset.stage !== stage) el.dataset.stage = stage; tipRefresh(el); }
 
 /** click / drag on the growth strip scrubs the shown step (same as the steps slider) */
 function chartStepAt(clientX) {
@@ -973,7 +1037,7 @@ function bind() {
   $('nb-sites').addEventListener('change', (e) => { const n = +e.target.value; if (n > 3 && S.carrier) onDensityChange(Math.sqrt(S.carrier.area / (SQ3 / 2 * n))); });
   // singularity
   $('sl-valence').addEventListener('input', (e) => { $('out-valence').value = e.target.value; });
-  $('sl-valence').addEventListener('change', (e) => { S.valence = +e.target.value; reseedNow(); drawChargeDiagram(); });
+  $('sl-valence').addEventListener('change', (e) => { S.valence = +e.target.value; reseedNow(); });
   $('btn-detected').addEventListener('click', () => { if (S.detected) { S.valence = Math.max(3, Math.min(9, S.detected.valence)); $('sl-valence').value = S.valence; $('out-valence').value = S.valence; setCentre(S.detected.centre, 'detected'); } });
   $('sel-seed').addEventListener('change', (e) => { S.seedKind = e.target.value; reseedNow(); });
   $('sl-seedr').addEventListener('input', (e) => { $('out-seedr').value = (+e.target.value).toFixed(1); });
@@ -985,12 +1049,14 @@ function bind() {
     for (const ch of document.querySelectorAll('#seed-mode .chip')) ch.classList.toggle('on', ch === chip);
     $('global-block').hidden = S.seedMode !== 'global'; $('local-block').hidden = S.seedMode === 'global';
     if (S.seedMode !== 'global') view.setRosy(null);
+    updateCentreReadout();
     reseedNow();
   });
-  $('btn-rosy').addEventListener('click', () => { if (S.seedMode !== 'global') { document.querySelector('#seed-mode .chip[data-mode="global"]').click(); } else globalSeed(true); });
+  $('btn-rosy').addEventListener('click', () => { if (S.seedMode !== 'global') { document.querySelector('#seed-mode .chip[data-mode="global"]').click(); } else globalField({ applySeed: true, force: true }); });
+  $('sel-cones').addEventListener('change', (e) => { S.coneMode = e.target.value; setStatus(`size field: ${CONE_LABEL[S.coneMode]}`); if (S.seedMode === 'global') reseedNow(); });
   $('cb-disp').addEventListener('change', (e) => { S.disp = e.target.checked; if (S.solver) S.solver.setParams({ dispersion: S.disp }); updateDensityReadout(); updatePrediction(); setStatus(S.disp ? 'operator corrected for the carrier dispersion (edge = a), field kept' : 'operator uncorrected (edge ≈ a / (1 + (q0 h)²/48)), field kept'); });
   // solve
-  $('sl-steps').addEventListener('input', (e) => { S.target = +e.target.value; $('out-steps').value = S.target; });
+  $('sl-steps').addEventListener('input', (e) => { S.target = +e.target.value; $('out-steps').value = S.target; if (S.solver && S.solver.steps < S.target) pump(); });
   $('btn-run').addEventListener('click', () => { S.playing = !S.playing; $('btn-run').textContent = S.playing ? 'Pause' : 'Run'; if (S.playing && S.solver && S.target <= S.solver.steps) { S.target = Math.min(S.maxSteps, S.solver.steps + S.spf); syncStepsUI(); } });
   $('btn-plus').addEventListener('click', () => { if (S.solver) { S.target = Math.min(S.maxSteps, S.solver.steps + 500); syncStepsUI(); } });
   $('btn-reseed').addEventListener('click', () => { S.playing = false; $('btn-run').textContent = 'Run'; reseedNow(); });
@@ -1010,6 +1076,8 @@ function bind() {
   $('nb-cg').addEventListener('change', (e) => { S.cgManual = true; S.cgIters = Math.max(4, Math.min(60, +e.target.value | 0)); if (S.solver) S.solver.cgIters = S.cgIters; });
   for (const ch of document.querySelectorAll('#refine-chips .chip')) ch.addEventListener('click', () => setRefine(+ch.dataset.level));
   // anneal
+  $('btn-heal').addEventListener('click', () => healNow());
+  $('btn-pins-clear').addEventListener('click', clearPins);
   $('ck-anneal').addEventListener('change', (e) => { S.anneal.on = e.target.checked; if (!S.anneal.on) stopAnneal(true); renderAnnealReadout(); updatePrediction(); });
   $('nb-r2').addEventListener('change', (e) => { S.anneal.r2 = +e.target.value; if (S.anneal.active && S.solver) { S.solver.setParams({ r: S.anneal.r2 }); } renderAnnealReadout(); updatePrediction(); });
   $('nb-b2').addEventListener('change', (e) => { S.anneal.b2 = +e.target.value; if (S.anneal.active && S.solver) { S.solver.setParams({ b: S.anneal.b2 }); } renderAnnealReadout(); updatePrediction(); });
@@ -1022,7 +1090,7 @@ function bind() {
   // per-direction read-outs
   for (const ch of document.querySelectorAll('#side-chips .chip')) ch.addEventListener('click', () => setSide(+ch.dataset.side));
   // view
-  for (const chip of document.querySelectorAll('#chips .chip, #dens-chips .chip')) chip.addEventListener('click', () => setLayer(chip.dataset.layer, !chip.classList.contains('on')));
+  for (const chip of document.querySelectorAll('#chips .chip')) chip.addEventListener('click', () => setLayer(chip.dataset.layer, !chip.classList.contains('on')));
   $('sl-lathw').addEventListener('input', (e) => { $('out-lathw').value = (+e.target.value).toFixed(2); S.lathW = +e.target.value; view.setStripeParams({ halfWidth: stripeHalfWidth() }); updateLaths(); updateDensityReadout(); });
   $('sel-lathcol').addEventListener('change', (e) => { S.lathCol = e.target.value; updateLaths(); });
   $('ck-overunder').addEventListener('change', (e) => { S.overUnder = e.target.checked; updateLaths(); });
@@ -1073,6 +1141,17 @@ function bind() {
   chart.addEventListener('pointerdown', (e) => { chartDown = true; chart.setPointerCapture(e.pointerId); scrub(e); });
   chart.addEventListener('pointermove', (e) => { if (chartDown) scrub(e); });
   chart.addEventListener('pointerup', () => { chartDown = false; }); chart.addEventListener('pointercancel', () => { chartDown = false; });
+  // the growth chart folds (the legend, its status mark and the solver controls stay)
+  const setGrowthOpen = (open) => { $('growth').classList.toggle('folded', !open); $('growth-toggle').setAttribute('aria-expanded', String(open)); try { localStorage.setItem('localsh-growth', open ? '1' : '0'); } catch (e) { /* ignore */ } if (open) drawChart(); };
+  $('growth-toggle').addEventListener('click', () => setGrowthOpen($('growth').classList.contains('folded')));
+  try { if (localStorage.getItem('localsh-growth') === '0') setGrowthOpen(false); } catch (e) { /* ignore */ }
+  // the Display sidebar (as in WeaveSim): beside the view, folds to a narrow tab, docks left or right; both remembered
+  const appEl = $('app');
+  const setDisplayDock = (left) => { appEl.classList.toggle('display-left', left); try { localStorage.setItem('localsh-display-left', left ? '1' : '0'); } catch (e) { /* ignore */ } };
+  const setDisplayOpen = (open) => { appEl.classList.toggle('display-closed', !open); $('display-toggle').setAttribute('aria-expanded', String(open)); try { localStorage.setItem('localsh-display-open', open ? '1' : '0'); } catch (e) { /* ignore */ } };
+  $('display-toggle').addEventListener('click', () => setDisplayOpen(appEl.classList.contains('display-closed')));
+  $('display-dock').addEventListener('click', () => setDisplayDock(!appEl.classList.contains('display-left')));
+  try { setDisplayDock(localStorage.getItem('localsh-display-left') === '1'); setDisplayOpen(localStorage.getItem('localsh-display-open') !== '0'); } catch (e) { /* ignore */ }
   // collapsible sections: remember what is folded
   let folds = {}; try { folds = JSON.parse(localStorage.getItem('localsh-folds') || '{}'); } catch (e) { folds = {}; }
   for (const d of document.querySelectorAll('details.sec')) {
@@ -1089,7 +1168,7 @@ function bind() {
     try { await navigator.clipboard.writeText(ta.value); $('modal-copy').textContent = 'Copied'; setTimeout(() => { $('modal-copy').textContent = 'Copy'; }, 1500); }
     catch (e) { ta.focus(); ta.select(); }
   });
-  const onTheme = () => { view.applyTheme(); drawChart(); drawPhase(); drawDtChart(); drawDensityDiagram(); drawChargeDiagram(); drawOrientLegend(); updateProbe(); if (S.carrierView !== 'u') updateCarrierColors(); if (S.lat) { view.setLattice(S.lat, S.summary); view.setSelectedVertex(S.selVertex); updateLaths(); updateDirectionLayers(); } };
+  const onTheme = () => { view.applyTheme(); drawChart(); drawPhase(); drawDtChart(); drawDensityDiagram(); drawOrientLegend(); updateProbe(); if (S.carrierView !== 'u') updateCarrierColors(); if (S.lat) { view.setLattice(S.lat, S.summary); view.setSelectedVertex(S.selVertex); updateLaths(); updateDirectionLayers(); } };
   try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', onTheme); } catch (e) { /* ignore */ }
   new MutationObserver(onTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.addEventListener('resize', () => { drawChart(); drawPhase(); drawDtChart(); });
@@ -1115,7 +1194,8 @@ window.addEventListener('unhandledrejection', (e) => setStatus('error: ' + (e.re
 
 async function main() {
   bind(); initTips();
-  view.setFieldAlpha(S.carrierAlpha); view.setStripeParams({ alpha: S.stripeAlpha, halfWidth: stripeHalfWidth() });
+  view.setFieldAlpha(S.carrierAlpha); view.setStripeParams({ alpha: S.stripeAlpha, halfWidth: stripeHalfWidth() }); view.setVisible('cones', false);
+  renderHealReadout();
   try { const t = localStorage.getItem('localsh-theme'); if (t && t !== 'auto') setTheme(t); } catch (e) { /* ignore */ }
   $('sl-steps').max = S.maxSteps; $('nb-max').value = S.maxSteps;
   if (window.top !== window.self) $('modal-download').hidden = true;      // the artifact viewer blocks page downloads
@@ -1129,5 +1209,7 @@ async function main() {
   requestAnimationFrame(loop);
   setInterval(tick, 150);                                 // rAF stops in hidden tabs; keep the solver advancing anyway
 }
-window.LocalSH = S; S.api = { selectLath, selectVertex, clearSelection, setTheme, setCentre, updateLaths, setTurntable, setProjection, setRefine, setSide, view, startAnneal, stopAnneal, extract, reseedNow, setLayer, updatePrediction };   // for debugging from the console
+window.LocalSH = S; S.api = { selectLath, selectVertex, clearSelection, setTheme, setCentre, updateLaths, setTurntable, setProjection, setRefine, setSide, view, startAnneal, stopAnneal, extract, reseedNow, setLayer, updatePrediction, globalField, loadCarrierByName, onDensityChange,
+  setSeedMode: (m) => document.querySelector(`#seed-mode .chip[data-mode="${m}"]`).click(), setConeMode: (m) => { $('sel-cones').value = m; S.coneMode = m; if (S.seedMode === 'global') reseedNow(); },
+  healNow, setStage, clearPins, findMotifs, pump, run: (target) => { S.target = Math.min(S.maxSteps, target); syncStepsUI(); } };   // for debugging and scripted runs from the console
 main();

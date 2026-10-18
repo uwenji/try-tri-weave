@@ -83,7 +83,7 @@ function cotanFromLengths(Fi, Len, n) {
  * Returns {N, frames, re, im, theta (angle of one branch in the vertex frame), mag (|z|/max), idx (Int8 per face),
  *          singular: [{face, index, valence}], sumIndex, energy, iters}
  */
-export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, cgMax = 300, log = null } = {}) {
+export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, cgMax = 300, log = null, constraints = null, x0 = null } = {}) {
   const { Fi, n, boundary } = c, L = Len || c.Li, reversed = fiReversed(c);
   const frames = intrinsicFrames(Fi, L, n, boundary, reversed);
   const { wmap, m } = cotanFromLengths(Fi, L, n);
@@ -113,11 +113,24 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
     for (let i = 0; i < n; i++) { out[i] += eps * m[i] * x[i]; out[n + i] += eps * m[i] * x[n + i]; }
   };
   const jac = new Float64Array(2 * n); for (let i = 0; i < n; i++) jac[i] = jac[n + i] = diag[i] + eps * m[i];
-  // inverse iteration
-  let z = new Float64Array(2 * n); { let s = 12345; const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff - 0.5; }; for (let i = 0; i < 2 * n; i++) z[i] = rnd(); }
   const normalise = (v) => { let s = 0; for (let i = 0; i < n; i++) s += m[i] * (v[i] * v[i] + v[n + i] * v[n + i]); s = Math.sqrt(s); for (let i = 0; i < 2 * n; i++) v[i] /= s; };
+  let z = new Float64Array(2 * n), iters = 0, lam = 0;
+  const cons = (constraints || []).filter(q => q.weight > 0 && q.vertex >= 0 && q.vertex < n && Number.isFinite(q.theta));
+  if (cons.length) {
+    // alignment constraints (Knöppel et al. 2013): minimise z*Az + Σ w_v |z_v − z̄_v|², z̄_v = e^{iNθ_v} → (A + W) z = W z̄, one
+    // linear solve instead of the eigenproblem; the weight grows from a nudge (0.3: 4× the vertex's own coupling) to a
+    // firm pin (1: 600×); a small weight mostly picks the global rotation of the free field
+    const W = new Float64Array(n), rhs = new Float64Array(2 * n);
+    for (const q of cons) { const wq = Math.min(1, q.weight), w = 30 * wq * wq / (1.05 - wq) * diag[q.vertex]; W[q.vertex] += w; rhs[q.vertex] += w * Math.cos(N * q.theta); rhs[n + q.vertex] += w * Math.sin(N * q.theta); }
+    const applyC = (x, out) => { applyA(x, out); for (let i = 0; i < n; i++) { out[i] += W[i] * x[i]; out[n + i] += W[i] * x[n + i]; } };
+    const jacC = Float64Array.from(jac); for (let i = 0; i < n; i++) { jacC[i] += W[i]; jacC[n + i] += W[i]; }
+    const res = pcg(applyC, jacC, rhs, x0, { maxIter: 6 * cgMax, tol: cgTol }); z = res.x; iters = res.iters;
+    if (log) log(`rosy with ${cons.length} alignment constraints: ${iters} PCG iterations, relres ${res.relres.toExponential(2)}`);
+  } else {
+  // inverse iteration
+  { let s = 12345; const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff - 0.5; }; for (let i = 0; i < 2 * n; i++) z[i] = rnd(); }
   normalise(z);
-  const rhs = new Float64Array(2 * n); let iters = 0, lam = 0;
+  const rhs = new Float64Array(2 * n);
   for (let it = 0; it < outer; it++) {
     for (let i = 0; i < n; i++) { rhs[i] = m[i] * z[i]; rhs[n + i] = m[i] * z[n + i]; }
     const res = pcg(applyA, jac, rhs, z, { maxIter: cgMax, tol: cgTol }); iters += res.iters;
@@ -127,6 +140,7 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
     for (let i = 0; i < 2 * n; i++) { num += znew[i] * Az[i]; ch += (znew[i] - z[i]) ** 2; }
     lam = num; z = znew; if (log) log(`rosy it ${it}: λ = ${lam.toExponential(3)}, Δ = ${Math.sqrt(ch).toExponential(2)}`);
     if (it > 2 && Math.sqrt(ch) < 1e-5) break;
+  }
   }
   const re = z.subarray(0, n), im = z.subarray(n, 2 * n);
   const theta = new Float64Array(n), mag = new Float64Array(n); let mx = 0;
@@ -145,7 +159,7 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
     if (mI !== 0) singular.push({ face: f, index: mI, valence: 6 - mI });
   }
   let sumIndex = 0; for (const sg of singular) sumIndex += sg.index;
-  return { N, frames, re, im, theta, mag, idx, singular, sumIndex, energy: lam, iters, m, reversed };
+  return { N, frames, re, im, theta, mag, idx, singular, sumIndex, energy: lam, iters, m, reversed, z, constrained: cons.length };
 }
 
 /** 3-D unit directions of branch k at every vertex for display, from the angle field and each vertex's first ring
@@ -189,9 +203,9 @@ export function transportAngle(frames, p, q) {
  * differs from the base ring's), new vertices are filled layer by layer by transporting from already-assigned
  * neighbours, then a few Jacobi sweeps smooth the new vertices. Returns {theta, frames}.
  */
-export function liftField(thetaBase, framesBase, nBase, cFine, N = 6, { sweeps = 3 } = {}) {
-  const { Fi, Li, n, boundary, V } = cFine;
-  const reversed = fiReversed(cFine), frames = intrinsicFrames(Fi, Li, n, boundary, reversed);
+export function liftField(thetaBase, framesBase, nBase, cFine, N = 6, { sweeps = 3, Len = null } = {}) {
+  const { Fi, Li, n, boundary, V } = cFine;                                   // Len: the fine carrier's lengths in ĝ, when the field lives there
+  const reversed = fiReversed(cFine), frames = intrinsicFrames(Fi, Len || Li, n, boundary, reversed);
   const theta = new Float64Array(n).fill(NaN), done = new Uint8Array(n);
   for (let i = 0; i < nBase; i++) {
     const j0 = framesBase[i].nb[0]; if (j0 === undefined || !frames[i].nb.length) continue;

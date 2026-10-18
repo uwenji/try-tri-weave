@@ -206,9 +206,9 @@ export function stripes(c, rosy, q0, { Len = null, outer = 12, cgTol = 1e-5, cgM
  * transporting ψ across the fine edges (with the fine coupling), then a few sweeps smooth the new vertices.
  * Returns {psi, u0, branch, edge}.
  */
-export function liftStripes(psiBase, nBase, cFine, thetaFine, framesFine, q0, N = 6, { sweeps = 2, reversed = false } = {}) {
-  const { Fi, Li, n } = cFine;
-  const { lenOf, key, m: area } = meshData(Fi, Li, n);
+export function liftStripes(psiBase, nBase, cFine, thetaFine, framesFine, q0, N = 6, { sweeps = 2, reversed = false, Len = null } = {}) {
+  const { Fi, Li, n } = cFine;                                                // Len: the fine carrier's lengths in ĝ (q0 is constant in ĝ)
+  const { lenOf, key, m: area } = meshData(Fi, Len || Li, n);
   const edge = stripeCoupling(framesFine, thetaFine, N, q0, lenOf, key);
   const psi = new Float64Array(6 * n), done = new Uint8Array(n);
   psi.set(psiBase.subarray(0, 6 * nBase)); for (let i = 0; i < nBase; i++) done[i] = 1;

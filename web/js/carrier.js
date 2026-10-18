@@ -2,6 +2,7 @@
 // a carrier from a dropped STL (weld, orient, Loop subdivision, intrinsic Delaunay flips — no remesher here), then
 // cotan Laplacian / mass / defects, singularity detection, heat-method distance and the n-fold lattice seed.
 import { csrFromCOO, spmv, csrDiagonal, pcg, dijkstra } from './sparse.js';
+import { conformalLengths, smearWeights } from './cones.js';
 
 export const SQ3 = Math.sqrt(3);
 
@@ -774,8 +775,8 @@ export class Carrier {
    *  residual Σ Ω_c − ∫K). Closed surface: the residual is spread as uniform curvature (Gauss–Bonnet needs it to be
    *  0) and φ has zero mean. φ is then shifted so that its mean on the ring ρ ≈ a around `centre` is 0 (edge a there).
    *  cones: [{vertex, valence}]. Returns {phi, residualDeg, min, max, iters}. Computed on the base carrier. */
-  sizeField(cones, a, centre) {
-    if (this.base) { const r = this.base.sizeField(cones, a, centre); return { ...r, phi: this.interp(r.phi) }; }
+  sizeField(cones, a, centre, { x0 = null, tol = 1e-8, smear = 0 } = {}) {
+    if (this.base) { const r = this.base.sizeField(cones, a, centre, { x0, tol, smear }); return { ...r, phi: this.interp(r.phi) }; }
     const { n, L, K, boundary, m } = this;
     const rhs = new Float64Array(n);
     for (let i = 0; i < n; i++) rhs[i] = boundary[i] ? 0 : -K[i];
@@ -783,7 +784,10 @@ export class Carrier {
     let sumOmega = 0, skipped = 0;
     for (const c of cones) {
       if (open && boundary[c.vertex]) { skipped++; continue; }              // a cone on the rim is the rim's business
-      const om = (6 - c.valence) * Math.PI / 3; rhs[c.vertex] += om; sumOmega += om;
+      const om = (6 - c.valence) * Math.PI / 3; sumOmega += om;
+      const Rc = c.smear != null ? c.smear : smear;                          // a cone may carry its own radius (user edit)
+      if (Rc > 0) { for (const [i, w] of smearWeights(this, c.vertex, Rc, Math.sign(om))) rhs[i] += om * w; }   // the lattice cannot resolve a cone below a: spread its angle over the curvature it stands for (no log spike in φ)
+      else rhs[c.vertex] += om;
     }
     let residual = sumOmega - this.omega;                                 // what the cones do not account for
     let phi, iters;
@@ -792,12 +796,13 @@ export class Carrier {
       const tmp = new Float64Array(n);
       const apply = (x, out) => { spmv(L, x, tmp); for (let i = 0; i < n; i++) out[i] = boundary[i] ? x[i] : tmp[i]; };
       const diag = new Float64Array(n); for (let i = 0; i < n; i++) diag[i] = boundary[i] ? 1 : Math.max(this.Ldiag[i], 1e-12);
-      const res = pcg(apply, diag, rhs, null, { maxIter: 3000, tol: 1e-8 }); phi = res.x; iters = res.iters;
+      const res = pcg(apply, diag, rhs, x0, { maxIter: 3000, tol }); phi = res.x; iters = res.iters;
     } else {
       for (let i = 0; i < n; i++) rhs[i] -= residual * m[i] / this.area;    // make Σ rhs = 0 (L is singular on a closed surface)
       const diag = new Float64Array(n); for (let i = 0; i < n; i++) diag[i] = Math.max(this.Ldiag[i], 1e-12);
       const proj = (v) => { let s = 0; for (let i = 0; i < n; i++) s += v[i]; s /= n; for (let i = 0; i < n; i++) v[i] -= s; };
-      const res = pcg((x, out) => spmv(L, x, out), diag, rhs, null, { maxIter: 3000, tol: 1e-8, projectMean: proj }); phi = res.x; iters = res.iters;
+      const res = pcg((x, out) => spmv(L, x, out), diag, rhs, x0, { maxIter: 3000, tol, projectMean: proj }); phi = res.x; iters = res.iters;
+      proj(phi);                                                             // zero mean, whatever the start
     }
     // normalise: mean 0 on the ring ρ ∈ [0.8 a, 1.2 a] around the centre (chart ρ = heat distance)
     if (centre >= 0 && a > 0) {
@@ -813,19 +818,16 @@ export class Carrier {
    *  conformal equivalence), cotan Laplacian and lumped mass rebuilt on the same intrinsic triangulation. What the
    *  solvers read: {n, L, m, Ldiag, area}; plus the resolution check in ĝ (edges per lattice edge a). */
   conformalOps(phi, a) {
-    const { Fi, Li, n } = this, nf = Fi.length / 3, Lh = new Float64Array(Li.length);
+    const { Fi, Li, n } = this, nf = Fi.length / 3, Lh = conformalLengths(Fi, Li, phi);
     let under = 0, bad = 0, maxE = 0;
     for (let f = 0; f < nf; f++) {
-      for (let s = 0; s < 3; s++) {
-        const i = Fi[3 * f + s], j = Fi[3 * f + (s + 1) % 3];
-        const l = Li[3 * f + s] * Math.exp(0.5 * (phi[i] + phi[j])); Lh[3 * f + s] = l;
-        if (l > a / 6) under++; if (l > maxE) maxE = l;
-      }
+      for (let s = 0; s < 3; s++) { const l = Lh[3 * f + s]; if (l > a / 6) under++; if (l > maxE) maxE = l; }
       const x = Lh[3 * f], y = Lh[3 * f + 1], z = Lh[3 * f + 2]; if (x + y <= z || y + z <= x || z + x <= y) bad++;
     }
     const { L, m } = cotanLaplacian(Fi, Lh, n);
     let area = 0; for (let i = 0; i < n; i++) area += m[i];
-    return { n, L, m, Ldiag: csrDiagonal(L), area, underResolvedPct: 100 * under / (3 * nf), badTriangles: bad, maxEdgeInGhat: maxE, phi };
+    const h = Float64Array.from(Lh).sort()[Lh.length >> 1];                   // median ĝ edge: the solvers' dispersion correction uses it
+    return { n, L, m, Ldiag: csrDiagonal(L), area, h, hBase: this.hBase, underResolvedPct: 100 * under / (3 * nf), badTriangles: bad, relaxedFaces: Lh.relaxed || 0, maxEdgeInGhat: maxE, phi, Len: Lh };
   }
 
   /** ρ̂ = ∫₀^ρ e^{φ} dρ along the chart ray to each vertex within `limit` of c (the geodesic radius in ĝ, for a

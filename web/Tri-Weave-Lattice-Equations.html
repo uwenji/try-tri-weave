@@ -202,6 +202,8 @@ th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rul
 th { font: 600 .76rem/1.3 var(--body); color: var(--muted); letter-spacing: .02em; background: var(--panel); }
 td { color: var(--ink-2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); }
+#ev-table tr.meta td { color: var(--muted); font-size: 12px; }
+#ev-table td.num { white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 tr.us td { color: var(--ink); background: color-mix(in srgb, var(--fld) 7%, transparent); }
 td b { color: var(--ink); font-weight: 500; }
@@ -466,21 +468,23 @@ footer li { margin-bottom: 4px; }
   <div class="stage even">
     <div>
       <figure class="chart" id="chart">
-        <svg id="chart-svg" viewBox="0 0 640 300" role="img" aria-label="Interior singular vertices summed over 23 zoo shapes: 5-6-7 remesh 1248, Instant Meshes 533, global seed without SH 519, localised SH 336, global 6-RoSy with SH 253."></svg>
+        <svg id="chart-svg" viewBox="0 0 640 300" role="img" aria-label="Interior singular vertices summed over 23 zoo shapes at equal realised edge length: Mmg 1662, Gmsh 1523, CGAL 1503, MeshLab 1220, pmp-library 878, u₀, no SH 505, Instant Meshes 496, localised SH 348, global 6-RoSy + SH 261."></svg>
         <div class="tip" id="chart-tip"></div>
-        <figcaption>Interior vertices with valence ≠ 6, summed over the 23 zoo shapes, at the same lattice edge a on every shape. Hover a bar for the split by shape group. Lower is better.</figcaption>
+        <figcaption>Interior vertices with valence ≠ 6, summed over the 23 zoo shapes, all at the same realised edge length: on every shape each mesher is re-run until its mean edge equals the mean lattice edge of the global SH result (within 1.2 %), so every method has about the same number of vertices to place. The five surface remeshers are the ones in the meshing list of <a href="https://github.com/nschloe/awesome-scientific-computing#meshing">awesome-scientific-computing</a> that take a curved surface, plus MeshLab. Hover a bar for the split by shape group and the checks. Lower is better.</figcaption>
       </figure>
     </div>
     <div class="eqs" id="defect-eqs"></div>
   </div>
   <div class="tablewrap"><table id="ev-table">
-    <thead><tr><th>shape group</th><th class="num">5-6-7 remesh</th><th class="num">Instant Meshes</th><th class="num">global seed u₀, no SH</th><th class="num">localised SH</th><th class="num">global 6-RoSy + SH</th></tr></thead>
+    <thead><tr><th>shape group</th></tr></thead>
     <tbody></tbody>
   </table></div>
   <div class="prose">
-    <p><b>Flat regions.</b> On the four developable shapes the global field has no singularity and the seed already has none, so neither the stripe solve nor SH has anything to remove. Instant Meshes also aligns to a 6-RoSy field, but solves positions locally and leaves 53 irregular vertices there. The orientation field is what keeps flat regions clean; the translation step has to be global for it to show.</p>
-    <p><b>Where SH matters.</b> Exactly where the stripe solve has branch points. On the 13 shapes without any, SH leaves the seed's count unchanged; on the 10 with branch points it cuts it from 511 to 245, by locking the triad and pulling branch points of two families together into 5–7 pairs or cancelling them. By group, the branching and closed shapes go from 202 to 75 and from 282 to 151. The closed shapes stay far above their floor (torus 0, genus 2: 12, genus 3: 24); with a uniform a the smoothest field pays for spread curvature with 5–7 rows, which only a size field (solving in ĝ) removes.</p>
-    <p class="eq-code">Scripts and raw numbers: <code>localize/experiments/zoo_compare.mjs</code>, <code>u0_only.mjs</code>, <code>triad_check.mjs</code>, <code>remesh_zoo.py</code>, <code>zoo_compare_out/</code>. Instant Meshes: <code>-r 6 -p 6 -s a -d</code>, best of extrinsic and intrinsic mode per shape. All global runs use the sign fix of Eq. <span data-ref="sign-fix"></span> (<code>signfix_sh.mjs</code>); without it the two ideal cones lose their lattice and four shapes end 1–4 vertices worse.</p>
+    <p><b>Flat regions.</b> On the four developable shapes the global field has no singularity and the seed already has none, so neither the stripe solve nor SH has anything to remove. Instant Meshes also aligns to a 6-RoSy field, but solves positions locally and leaves 42 irregular vertices there. The orientation field is what keeps flat regions clean; the translation step has to be global for it to show.</p>
+    <p><b>Where SH matters.</b> Exactly where the stripe solve has branch points. On the 13 shapes without any, SH leaves the seed's count unchanged; on the 10 with branch points it cuts it from 497 to 253, by locking the triad and pulling branch points of two families together into 5–7 pairs or cancelling them. By group, the branching and closed shapes go from 192 to 79 and from 278 to 155. The closed shapes stay far above their floor (torus 0, genus 2: 12, genus 3: 24); with a uniform a the smoothest field pays for spread curvature with 5–7 rows, which only a size field (solving in ĝ) removes.</p>
+    <p><b>The remeshers.</b> MeshLab, CGAL and pmp-library run the isotropic remeshing loop of Botsch and Kobbelt: split edges longer than 4/3 of the target, collapse those shorter than 4/5, flip edges whenever that brings the four valences around them closer to 6, smooth tangentially, project back. It is the one family whose objective is equal edges <i>and</i> valence 6, and pmp-library does it best (878, against 1220 for MeshLab and 1503 for CGAL). Gmsh (Frontal-Delaunay or MeshAdapt on the reparametrised STL, best of the two per shape: 1523) and Mmg (1662) aim at element quality and size, not valence. All of them still leave irregular vertices on flat ground (132 to 224 on the developable shapes, where the field-aligned methods have none): a flip is a local decision with no lattice orientation or phase behind it, so a 5–7 pair costs it almost nothing. On Bunny, whose ears are thinner than the edge length, the remeshers other than MeshLab drop 14–31 % of the surface (the table's area row); Mmg also on genus 2 and 3 (its Hausdorff bound is loose here so that the size, not the curvature, sets the edge). Not in the chart: the planar generators of the list (Triangle, MeshPy, distmesh, dmsh, SeismicMesh, TriWild) mesh 2-D domains only; TetGen, TetWild and fTetWild mesh volumes; QuadriFlow makes quads (valence 4 is regular there); CGAL's Delaunay-refinement surface mesher (pygalmesh) did not run reliably with CGAL 5.6; trimesh, meshio, MOAB, meshplex and optimesh are I/O and smoothing tools.</p>
+    <p><b>How the comparison is set up.</b> The count of irregular vertices only means something at the same density, so every method gets the same edge length. The SH variants run at lattice edge a and realise it (the read-out measures each lattice edge as the chord between its two peaks). The global SH lattice's mean edge on each shape is the target; every mesher (MeshLab isotropic explicit remeshing, 20 iterations; CGAL <code>isotropic_remeshing</code> and pmp-library <code>uniform_remeshing</code>, 10 iterations; Gmsh 4.15 with <code>classifySurfaces</code> at 40°; Mmg <code>mmgs -hsiz h -hausd 10h</code>; Instant Meshes <code>-r 6 -p 6 -d</code>) is re-run with its edge parameter rescaled until its mean output edge matches it within 1.2 % (Mmg on Bunny stops at 0.84). On Bunny MeshLab stalls at 0.86 of the target (its surface-distance check blocks the collapses at the ears), so it is decimated first and then remeshed. The seed u₀ alone is read at a without calibration; on the torus it has 25 % extra peaks (edge 0.92). An earlier version of this chart compared at the same target a only; the remesh then had 10 % more vertices than the lattice overall (Bunny 75 %), with almost the same total (1248).</p>
+    <p class="eq-code">Scripts and raw numbers: <code>localize/experiments/zoo_equal_edge/</code> (<code>bench_sh.mjs</code> for the three SH variants with the realised edges, <code>bench_mesh.py</code> for the calibrated MeshLab remesh and Instant Meshes, <code>bench_more.py</code> for Gmsh, Mmg, CGAL and pmp-library with their drivers in <code>drivers/</code>, <code>area_check.py</code>, <code>aggregate.py</code>, per-shape JSON in <code>out/</code>); earlier runs <code>zoo_compare.mjs</code>, <code>u0_only.mjs</code>, <code>triad_check.mjs</code>. Instant Meshes: best of extrinsic and intrinsic mode per shape. All global runs use the sign fix of Eq. <span data-ref="sign-fix"></span> (<code>signfix_sh.mjs</code>); without it the two ideal cones lose their lattice and four shapes end 1–4 vertices worse.</p>
   </div>
 </section>
 
@@ -490,7 +494,7 @@ footer li { margin-bottom: 4px; }
   <div class="tablewrap"><table>
     <thead><tr><th>method</th><th>orientation</th><th>translation / positions</th><th>integers and cuts</th><th>irregular vertices come from</th></tr></thead>
     <tbody>
-      <tr><td><b>Isotropic remesh</b> (split, collapse, valence flips)</td><td>none</td><td>local edge operations</td><td>none</td><td>anywhere a flip gets stuck; 15 on a flat disk here</td></tr>
+      <tr><td><b>Isotropic remesh</b> (split, collapse, valence flips: MeshLab, CGAL, pmp-library)</td><td>none</td><td>local edge operations</td><td>none</td><td>anywhere a flip gets stuck; 20–28 on a flat disk here</td></tr>
       <tr><td><b>HexCover</b>, Nieser et al. 2012</td><td>6-RoSy from curvature directions, singularities clustered</td><td>global parameterization on a six-sheeted branched cover</td><td>cut graph; translations rounded to the Eisenstein lattice (heuristic, exact problem NP-hard)</td><td>the field's singularities only; incommensurability becomes distortion</td></tr>
       <tr><td><b>Instant Meshes</b>, Jakob et al. 2015</td><td>6-RoSy, local smoothing, multiresolution</td><td>position field, local smoothing</td><td>none</td><td>field singularities plus position-field singularities</td></tr>
       <tr><td><b>Stripe patterns</b>, Knöppel et al. 2015</td><td>globally optimal field (2013)</td><td>one stripe phase, global eigenvector</td><td>none; branch points allowed</td><td>branch points</td></tr>
@@ -1662,12 +1666,19 @@ const FIG_FOR = { floor: ConeFig, carrier: CotanFig, smooth: WaveFig, orient: Ro
 
 // ------------------------------------------------------------------ evidence chart + table
 const GROUPS = ['developable (4)', 'single cones (6)', 'open, spread curvature (7)', 'branching (2)', 'closed (4)'];
+// equal realised edge length (2026-10-18/19): per shape, every mesher is re-run until its mean edge equals the mean lattice edge of the
+// global SH result (±1.2 %, Mmg on Bunny 0.84); nv = vertices summed over the shapes, edge = mean edge ÷ that SH edge (min–max),
+// area = surface area of the output ÷ the input's on the worst shape (null: the SH lattices live on the unchanged carrier)
 const METHODS = [
-  { name: '5-6-7 isotropic remesh', g: [150, 169, 200, 292, 437] },
-  { name: 'Instant Meshes (6-RoSy, 6-PoSy)', g: [53, 76, 93, 149, 162] },
-  { name: 'global seed u₀, no SH', g: [0, 14, 21, 202, 282] },
-  { name: 'localised SH, one seed', g: [0, 11, 36, 112, 177] },
-  { name: 'global 6-RoSy + stripes + SH', g: [0, 10, 17, 75, 151], us: true },
+  { name: 'Mmg (mmgs)', short: 'Mmg', g: [224, 263, 322, 486, 367], nv: 3966, edge: [0.837, 1.011], area: 0.688 },
+  { name: 'Gmsh (Frontal-Delaunay / MeshAdapt)', short: 'Gmsh', g: [165, 188, 228, 518, 424], nv: 4038, edge: [0.948, 1.028], area: 0.791 },
+  { name: 'CGAL isotropic remeshing', short: 'CGAL', g: [213, 208, 274, 482, 326], nv: 4019, edge: [0.987, 1.017], area: 0.857 },
+  { name: 'MeshLab isotropic remesh (5-6-7)', short: 'MeshLab', g: [133, 182, 205, 311, 389], nv: 4116, edge: [0.989, 1.012], area: 0.978 },
+  { name: 'pmp-library uniform remeshing', short: 'pmp-library', g: [132, 132, 152, 262, 200], nv: 4036, edge: [0.989, 1.009], area: 0.747 },
+  { name: 'global seed u₀, no SH', short: 'u₀, no SH', g: [0, 14, 21, 192, 278], nv: 3986, edge: [0.920, 1.010], area: null },
+  { name: 'Instant Meshes (6-RoSy, 6-PoSy)', short: 'Instant Meshes', g: [42, 66, 103, 132, 153], nv: 3995, edge: [0.987, 1.010], area: 0.799 },
+  { name: 'localised SH, one seed', short: 'localised SH', g: [0, 11, 36, 118, 183], nv: 3872, edge: [0.986, 1.031], area: null },
+  { name: 'global 6-RoSy + stripes + SH', short: 'global 6-RoSy + SH', g: [0, 10, 17, 79, 155], nv: 3865, edge: [1.000, 1.000], area: null, us: true },
 ];
 function chart() {
   const svg = $('#chart-svg'), tip = $('#chart-tip'), fig = $('#chart'), ns = 'http://www.w3.org/2000/svg';
@@ -1675,11 +1686,13 @@ function chart() {
   const render = () => {
     const compact = fig.clientWidth < 520; if (compact === compactNow) return; compactNow = compact;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    const VW = compact ? 360 : 640, x0 = compact ? 4 : 236, x1 = compact ? 300 : 584, row = compact ? 58 : 46, top = compact ? 8 : 30, max = 1250, X = (v) => x0 + v / max * (x1 - x0);
+    const VW = compact ? 360 : 640, x0 = compact ? 4 : 236, x1 = compact ? 300 : 584, row = compact ? 58 : 46, top = compact ? 8 : 30;
+    const big = Math.max(...METHODS.map((m) => m.g.reduce((a, b) => a + b, 0))), step = big > 1500 ? 500 : 250, max = Math.ceil(big / step) * step, X = (v) => x0 + v / max * (x1 - x0);
+    const ticks = []; for (let t = 0; t <= max; t += step) ticks.push(t);
     const VH = top + METHODS.length * row + 34; svg.setAttribute('viewBox', `0 0 ${VW} ${VH}`);
     const el = (n, a, txt) => { const e = document.createElementNS(ns, n); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; };
     const gy0 = top - 8, gy1 = top + METHODS.length * row - 10;
-    for (const t of [0, 250, 500, 750, 1000, 1250]) { el('line', { x1: X(t), x2: X(t), y1: gy0, y2: gy1, stroke: C.rule, 'stroke-width': 1 }); el('text', { x: X(t), y: gy1 + 18, fill: C.muted, 'font-size': 11, 'text-anchor': t === 0 && compact ? 'start' : 'middle', 'font-family': 'IBM Plex Mono, monospace' }, t >= 1000 ? (t / 1000).toFixed(t % 1000 ? 2 : 0) + 'K' : String(t)); }
+    for (const t of ticks) { el('line', { x1: X(t), x2: X(t), y1: gy0, y2: gy1, stroke: C.rule, 'stroke-width': 1 }); el('text', { x: X(t), y: gy1 + 18, fill: C.muted, 'font-size': 11, 'text-anchor': t === 0 && compact ? 'start' : 'middle', 'font-family': 'IBM Plex Mono, monospace' }, t >= 1000 ? (t / 1000).toFixed(t % 1000 ? 2 : 0) + 'K' : String(t)); }
     METHODS.forEach((m, i) => {
       const yb = top + i * row + (compact ? 18 : 0), tot = m.g.reduce((a, b) => a + b, 0), x = X(tot), h = compact ? 20 : 22, r = 4;
       el('text', compact ? { x: x0, y: yb - 6, fill: m.us ? C.ink : C.ink2, 'font-size': 12.5, 'font-family': 'IBM Plex Sans, sans-serif', 'font-weight': m.us ? 600 : 400 }
@@ -1688,7 +1701,9 @@ function chart() {
       el('text', { x: x + 8, y: yb + h / 2 + 4, fill: C.ink, 'font-size': 12, 'font-family': 'IBM Plex Mono, monospace' }, String(tot));
       const hit = el('rect', { x: 0, y: yb - (compact ? 20 : 10), width: VW, height: compact ? row : 42, fill: 'transparent', tabindex: 0, 'aria-label': `${m.name}: ${tot}` });
       const show = () => {
-        tip.innerHTML = `<b>${esc(m.name)}</b><table>${GROUPS.map((g, k) => `<tr><td>${esc(g)}</td><td class="num">${m.g[k]}</td></tr>`).join('')}<tr><td><b>total</b></td><td class="num"><b>${tot}</b></td></tr></table>`;
+        tip.innerHTML = `<b>${esc(m.name)}</b><table>${GROUPS.map((g, k) => `<tr><td>${esc(g)}</td><td class="num">${m.g[k]}</td></tr>`).join('')}<tr><td><b>total</b></td><td class="num"><b>${tot}</b></td></tr>` +
+          `<tr><td>vertices</td><td class="num">${m.nv.toLocaleString('en')}</td></tr><tr><td>mean edge ÷ SH edge</td><td class="num" style="white-space: nowrap">${m.us ? '1 (reference)' : `${m.edge[0].toFixed(2)}–${m.edge[1].toFixed(2)}`}</td></tr>` +
+          `<tr><td>surface kept, worst shape</td><td class="num">${m.area == null ? 'input surface' : Math.round(100 * m.area) + ' %'}</td></tr></table>`;
         const fr = fig.getBoundingClientRect(), sr = svg.getBoundingClientRect(), sc = sr.width / VW;
         tip.style.left = Math.max(8, Math.min(fr.width - 236, (x + 14) * sc)) + 'px'; tip.style.top = (sr.top - fr.top) + (yb + h + 8) * sc + 'px'; tip.style.opacity = 1;
       };
@@ -1698,9 +1713,13 @@ function chart() {
   };
   render(); new ResizeObserver(render).observe(fig);
   chartRerender = () => { compactNow = null; render(); };
+  const th = $('#ev-table thead tr'); th.innerHTML = '<th>shape group</th>' + METHODS.map((m) => `<th class="num">${esc(m.short || m.name)}</th>`).join('');
   const tb = $('#ev-table tbody');
   GROUPS.forEach((g, k) => { const tr = document.createElement('tr'); tr.innerHTML = `<td>${esc(g)}</td>` + METHODS.map((m) => `<td class="num">${m.g[k]}</td>`).join(''); tb.appendChild(tr); });
   const tr = document.createElement('tr'); tr.innerHTML = '<td><b>total</b></td>' + METHODS.map((m) => `<td class="num"><b>${m.g.reduce((a, b) => a + b, 0)}</b></td>`).join(''); tb.appendChild(tr);
+  const tv = document.createElement('tr'); tv.className = 'meta'; tv.innerHTML = '<td>vertices (all shapes)</td>' + METHODS.map((m) => `<td class="num">${m.nv.toLocaleString('en')}</td>`).join(''); tb.appendChild(tv);
+  const te = document.createElement('tr'); te.className = 'meta'; te.innerHTML = '<td>mean edge ÷ SH lattice edge, per shape</td>' + METHODS.map((m) => `<td class="num">${m.us ? '1' : `${m.edge[0].toFixed(2)}–${m.edge[1].toFixed(2)}`}</td>`).join(''); tb.appendChild(te);
+  const ta = document.createElement('tr'); ta.className = 'meta'; ta.innerHTML = '<td>surface area kept, worst shape</td>' + METHODS.map((m) => `<td class="num">${m.area == null ? '—' : Math.round(100 * m.area) + ' %'}</td>`).join(''); tb.appendChild(ta);
 }
 
 // ------------------------------------------------------------------ all equations, notation, copy-all
