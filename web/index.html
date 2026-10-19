@@ -62,10 +62,10 @@
         <label class="btn file" title="STL, OBJ, PLY or OFF: repaired and remeshed in the browser (nothing is uploaded). A .lshc carrier loads as it is."><input type="file" id="file-stl" accept=".stl,.obj,.ply,.off,.lshc" hidden>Open mesh…</label>
         <label for="sel-imp-up" title="which axis of the file points up: z for Rhino and most CAD, y for most web models (glTF, Blender, Sketchfab, many OBJ / STL downloads). Changing it turns the opened model at once.">up</label>
         <select id="sel-imp-up" class="up" title="up axis of the file"><option value="+z">z</option><option value="+y">y</option><option value="-y">−y</option><option value="+x">x</option><option value="-x">−x</option><option value="-z">−z</option></select>
-        <span class="hint">or drop one anywhere</span>
+        <button id="btn-export" class="btn">Export lattice</button>
       </div>
       <div class="row">
-        <button id="btn-export" class="btn">Export lattice</button>
+        <span class="hint">or drop file in canvas</span>
       </div>
       <div class="row import" id="import-prog" hidden>
         <progress id="pg-import" max="1" value="0"></progress>
