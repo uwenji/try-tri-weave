@@ -22,6 +22,17 @@
   "a_default": 11.308418785815615
  },
  {
+  "name": "Duck(Bob)",
+  "file": "carriers/Duck_bob.lshc",
+  "n": 14981,
+  "nf": 29962,
+  "omega_deg": -1.5027484758978823e-10,
+  "chi": 0,
+  "bbox": 225.67073242041243,
+  "h": 1.881677051312396,
+  "a_default": 17.369326627499042
+ },
+ {
   "name": "developableSrf1",
   "file": "carriers/developableSrf1.lshc",
   "n": 15116,
@@ -66,7 +77,7 @@
   "a_default": 4.727039382683817
  },
  {
-  "name": "goose",
+  "name": "Goose",
   "file": "carriers/goose.lshc",
   "n": 8860,
   "nf": 17716,
@@ -251,38 +262,5 @@
   "bbox": 28.28423883220426,
   "h": 0.23570226039551584,
   "a_default": 2.175713172881685
- },
- {
-  "name": "ideal cone n=3 (180\u00b0)",
-  "file": "carriers/ideal_cone_n3_180deg.lshc",
-  "n": 10020,
-  "nf": 19846,
-  "omega_deg": 178.20001422402726,
-  "chi": 1,
-  "bbox": 33.16622025973372,
-  "h": 0.27638539919628335,
-  "a_default": 2.551249838734923
- },
- {
-  "name": "ideal cone n=4 (240\u00b0)",
-  "file": "carriers/ideal_cone_n4_240deg.lshc",
-  "n": 9067,
-  "nf": 17940,
-  "omega_deg": 118.50435652572654,
-  "chi": 1,
-  "bbox": 30.413782505916153,
-  "h": 0.25344843876242584,
-  "a_default": 2.3395240501147
- },
- {
-  "name": "ideal cone n=5 (300\u00b0)",
-  "file": "carriers/ideal_cone_n5_300deg.lshc",
-  "n": 7781,
-  "nf": 15368,
-  "omega_deg": 59.04965070683027,
-  "chi": 1,
-  "bbox": 29.051646533667785,
-  "h": 0.24209731743889915,
-  "a_default": 2.2347444686667615
  }
 ]
