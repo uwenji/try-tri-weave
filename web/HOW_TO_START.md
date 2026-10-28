@@ -76,22 +76,22 @@ What "ideal" looks like: exactly one singular peak and Σ(6−n) = round(Ω/60°
   comes out regular with those cones as its only defects where the surface is resolved (v4Cone_round ×2: 3 fives, no pairs,
   with the default r, b). The read-out lists the cones, the model edge a·e^{−φ} they imply and the branch points left (0 is the
   goal). `carrier shows → lattice edge a·e^{−φ}` draws the size field; `stripes` and `field 5/7` also work in local mode now.
+* `flat on developable parts` (on by default, 2026-10-28): the size field leaves tubes, flat caps and strips at the edge a and
+  changes the edge only on the curved strips; untick it for the free size field (tubes then shrink or taper).
 * Features thinner than a lattice edge (a sharp beak, a leg of two sites) still produce clusters — refine (`×2`) or lower the
   density there.
 * **Heal 5-7-5** (section 4) — after the surface is covered, click it: the bound pairs (5-7-5, 7-5-7, wrong diagonals) are
   taken apart one by one inside the solver and kept only where the lattice holds the single defect by itself; the read-out
   says what was found, healed and pinned. `pin what will not hold` keeps the single 5 where the field would re-form the pair
-  (held after every batch of steps; `Clear pins` releases). Click again after more steps or an anneal: new pairs may have
+  (held after every batch of steps; `Clear pins` releases). Click again after more steps: new pairs may have
   formed. Bunny ×2: 67 → 59, goose ×2: 65 → 57 in a few seconds on the GPU.
 
-## Size field and the two-stage schedule (2026-10-13)
+## Size field and the direction layers (2026-10-13)
 
 * Section 3 → **conformal size field**: the lattice edge becomes a·e^{−φ} with φ from the surface curvature and the
   cones (the centre, plus any you add with `+ cone…`). On the domes this turns {5:10, 6:112, 7:8} into {4:1, 6:98}.
   Watch the readout: if it warns about resolution in ĝ, click `×2` in section 2.
-* Section 4 → **anneal after growth**: once the surface is covered, the run continues at (r₂, b₂) where dislocations
-  are mobile. Use it for isolated extra 5–7 pairs; a seam between fronts that met is a holonomy mismatch and stays —
-  move the centre instead (seed on the flat part, so the merge happens at the junctions).
+* (The two-stage anneal of section 4 was removed on 2026-10-28: on the zoo it gave no lasting gain — use `Heal pairs`.)
 * Section 5 → chips **strain** (edge length per direction family) and **orient** (lattice orientation: grains and
   seams at a glance).
 
@@ -118,7 +118,7 @@ Copy `index.html`, `style.css`, `manifest.json`, `Tri-Weave-Lattice-Equations.ht
 
 ## Layout (2026-10-18)
 
-* **Status marks** — the coloured ⓘ next to the growth legend, the zoo list, `lattice edge a`, `anneal after growth` and
+* **Status marks** — the coloured ⓘ next to the growth legend, the zoo list, `lattice edge a` and
   `Heal 5-7-5` carry the read-outs: hover (or tap) for the card. Green fine · orange look at it · red a problem · grey
   nothing yet. The density diagram is in the card of `lattice edge a`.
 * **Growth chart** — the chevron left of the legend folds it; the legend, the status mark and the solver controls stay.

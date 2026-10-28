@@ -8,10 +8,10 @@ import { extractLattice, chargeSummary, traceStrands, edgeStrain, orientationFie
 import { View } from './view.js';
 import { valenceHex, FAMILY_HEX, lutColor, misorRGB } from './colormap.js';
 import { MinHeap } from './sparse.js';
-import { frontState, predictGrowth, mapValue } from './frontspeed.js';
+import { frontState, predictGrowth, rDie, rGrow, speedColumn, dtFactor } from './frontspeed.js';
 import { FRONT } from './frontspeed_table.js';
 import { directionsFromNb0 } from './rosy.js';
-import { healPass, applyPins, findMotifs } from './heal.js';
+import { healPass, glidePass, climbPass, applyPins, findMotifs } from './heal.js';
 
 const SQ3 = Math.sqrt(3);
 const $ = (id) => document.getElementById(id);
@@ -22,13 +22,14 @@ const S = {
   a: 2, valence: 6, centre: -1, centreMode: 'detected', detected: null,
   target: 3000, maxSteps: 20000, spf: 25, cgIters: 12, playing: false, busy: false,
   r: -0.08, b: 1.2, dt: 0.1, seedKind: 'wave', seedR: 2.0, seedPhi: 0, disp: true, seedMode: 'local', rosy: null, stripesRes: null, globalReq: 0,
-  coneMode: 'greedy', solverGhat: null,                   // global mode: cones + size field ĝ ('greedy' | 'field' | 'uniform'); the stripesRes the solver's operators were built from
+  coneMode: 'greedy', solverGhat: null, mbo: true,          // mbo: the global field relaxed to unit length (its singularities on the curvature)
+  coneFlat: true,                                           // cones from the curvature: ĝ kept flat on the developable parts (cones.js · developableWeights)
+                    // global mode: cones + size field ĝ ('greedy' | 'field' | 'uniform'); the stripesRes the solver's operators were built from
   lat: null, summary: null, strands: null, history: [], lastExtract: -1, extractEvery: 100, shownStep: -1, scrubbed: false,
   carrierView: 'u', carrierAlpha: 1, stripeAlpha: [1, 1, 1], stripesShown: null, lathW: 0.18, lathCol: 'family', overUnder: true, msg: '',
   theme: 'auto', showValence: {}, selLath: -1, selLathKey: null, selVertex: -1, selVertexKey: -1, armPick: false,
   turntable: false, turnSpeed: 12, projection: 'persp',
   refine: 0, baseCarrier: null, side: 1, cgManual: false,
-  anneal: { on: false, r2: -0.027, b2: 0.69, when: 'auto', step: 5000, active: false, startedAt: -1 },
   pins: [], healing: false, healReport: null,              // heal.js: sites held in the field after every batch of steps, and the last pass's report
   strainFam: -1, strainRange: 0.15, es: null, orient: null, orientMode: 'mis',
   geo: null, pred: null,                                   // geodesic distances from the centre / to the rim, and the growth prediction
@@ -68,7 +69,7 @@ async function loadCarrierByName(name) {
 /** opts.refine: the same surface at another resolution — keep the camera, the centre and the selection */
 function setCarrier(c, aDefault, opts = {}) {
   S.carrier = c; S.baseCarrier = c.base || c; S.refine = c.level || 0; S.rosy = null; S.stripesRes = null; S.stripesShown = null;
-  S.playing = false; S.lat = null; S.summary = null; S.strands = null; S.history = []; S.lastExtract = -1;
+  S.playing = false; syncRun(); S.lat = null; S.summary = null; S.strands = null; S.history = []; S.lastExtract = -1;
   S.extractEvery = 100 * Math.max(1, Math.round(c.n / 12000));              // the read-out is O(n log n): less often on fine carriers
   const [lo, hi] = aRange(); S.a = Math.min(hi, Math.max(lo, aDefault || c.bbox / 13));
   $('sl-a').value = sliderFromA(S.a); $('nb-a').value = S.a.toFixed(3);
@@ -119,7 +120,6 @@ function newSolver(reseed, ghatRes = null) {
   if (ghatRes && ghatRes.phi && ghatRes.carrier === c) { if (!ghatRes.ops) ghatRes.ops = c.conformalOps(ghatRes.phi, ghatRes.a); ops = ghatRes.ops; S.solverGhat = ghatRes; }
   try { S.solver = S.device ? new GpuSolver(S.device, ops, opts) : new CpuSolver(ops, opts); }
   catch (e) { console.warn('GPU solver failed, using CPU', e); S.device = null; S.solver = new CpuSolver(ops, opts); }
-  stopAnneal(false);
   $('st-backend').textContent = S.solver.backend === 'webgpu' ? `WebGPU${S.device.info?.architecture ? ' · ' + S.device.info.architecture : ''}` : 'CPU (JS)';
   $('st-backend').classList.toggle('gpu', S.solver.backend === 'webgpu');
   if (reseed) reseedNow();
@@ -151,16 +151,18 @@ function runGlobalWorker(c, q0, a, mode, onStage) {
     const id = ++gwId; gwPending.set(id, { resolve, reject, onStage });
     const pack = (cc) => ({ name: cc.name, h: cc.h, hBase: cc.hBase, n: cc.n, Fi: cc.Fi, Li: cc.Li, K: cc.K, B: cc.boundary, V: cc.V, N: cc.N, F: cc.F, parents: cc.parents });
     const base = c.base || c, key = `${c.name}|${base.n}|${c.level || 0}|${c.n}`;
-    globalWorker().postMessage({ id, key, base: pack(base), fine: c.base ? pack(c) : null, q0, a, mode, edits: coneEditsArray() });
+    globalWorker().postMessage({ id, key, base: pack(base), fine: c.base ? pack(c) : null, q0, a, mode, edits: coneEditsArray(), mbo: S.mbo ? MBO : null, flat: S.coneFlat ? FLAT : null });
   });
 }
+const MBO = { core: 0.5, iters: 20 };                                  // unit-length relaxation of the global field: core 0.5 a, 20 steps (zoo: 254 → 228 non-6)
+const FLAT = { W: 30, deg: 5, ramp: 1 };                               // ĝ flat on the developable parts: Laplacian 30× stiffer ≥ 1 a from |K| ≥ 5° per lattice cell
 const CONE_LABEL = { greedy: 'cones from the curvature', field: "the field's own 5/7s as cones", uniform: 'uniform a' };
 /** the mode the worker runs in: the chosen cone mode in global mode, the model metric when only a display asks */
 const globalMode = () => (S.seedMode === 'global' ? S.coneMode : 'uniform');
 async function globalField({ applySeed = true, force = false } = {}) {
   const c = S.carrier; if (!c || !S.solver) return;
   const a = S.a, mode = globalMode(), R0 = S.stripesRes, editsKey = JSON.stringify(coneEditsArray());
-  if (!force && R0 && R0.carrier === c && R0.a === a && R0.mode === mode && R0.editsKey === editsKey) { if (applySeed) applyGlobalSeed(R0); return; }
+  if (!force && R0 && R0.carrier === c && R0.a === a && R0.mode === mode && R0.editsKey === editsKey && R0.mbo === S.mbo && R0.flat === S.coneFlat) { if (applySeed) applyGlobalSeed(R0); return; }
   if (S.globalBusy && !applySeed) return;                                       // a display request while one is running: the result will come
   const req = ++S.globalReq; S.globalBusy = true;
   if (applySeed) { S.seedPending = true; $('btn-rosy').disabled = true; }
@@ -179,7 +181,7 @@ async function globalField({ applySeed = true, force = false } = {}) {
     const np = branch.filter(b => b.winding > 0).length, nm = branch.length - np;
     const ghat = !!d.phi, ci = d.coneInfo, active = d.cones.filter(q => q.on !== false), coneHist = active.reduce((h, q) => (h[q.valence] = (h[q.valence] || 0) + 1, h), {});
     const sum = `global field${ghat ? ` · ĝ with ${active.length} cones${ci && ci.constrained ? ', aligned' : ''}` : ''} · ${branch.length} branch points`;
-    S.stripesRes = { carrier: c, a, mode, editsKey, u0: d.u0, branch, sum, faces: d.stripeFaces || null, phi: d.phi || null, cones: d.cones, coneInfo: ci, ops: null };
+    S.stripesRes = { carrier: c, a, mode, editsKey, mbo: S.mbo, flat: S.coneFlat, u0: d.u0, branch, sum, faces: d.stripeFaces || null, phi: d.phi || null, cones: d.cones, coneInfo: ci, ops: null };
     let resWarn = '';                                                         // the ĝ operators: warn when a steep size field is under-resolved
     if (ghat && ci) { const ops = c.conformalOps(d.phi, a); S.stripesRes.ops = ops; if (ops.underResolvedPct > 2) resWarn = ` · ${ops.underResolvedPct.toFixed(1)} % of the ĝ edges longer than a/6: refine the carrier (×2) or lower the density`; }
     view.setRosy(S.rosy.dirs, 0.4 * a);
@@ -204,7 +206,7 @@ const cen = (A, ids) => [0, 1, 2].map(k => (A[3 * ids[0] + k] + A[3 * ids[1] + k
 function coneEditsArray() { return []; }
 
 function afterReseed(sum) {
-  stopAnneal(true); S.pins = []; S.healReport = null; renderHealReadout();
+  S.pins = []; S.healReport = null; renderHealReadout();
   S.history = []; S.lastExtract = -1; S.lat = null; S.summary = null; S.strands = null; S.es = null; S.orient = null; S.shownStep = -1; S.scrubbed = false;
   view.setLattice(null, null); view.setLaths(null, null, {}); view.setStrain(null); view.setOrientation(null); clearSelection(false); updateDirectionReadout();
   setSum('sing', sum);
@@ -227,17 +229,17 @@ async function pump() {
       const s = S.solver, t0 = performance.now(), n = Math.min(S.spfAuto || S.spf, S.target - s.steps);
       try { await s.step(n); } catch (e) {
         if (s !== S.solver) { await yieldTask(); continue; }                   // the solver was replaced under this step (new carrier, new seed): carry on with the new one
-        console.error(e); setStatus('solver error: ' + e.message); S.playing = false; S.target = s.steps; break;
+        console.error(e); setStatus('solver error: ' + e.message); S.playing = false; syncRun(); S.target = s.steps; break;
       }
       if (s !== S.solver) { await yieldTask(); continue; }
       if (S.pins.length) applyPins(s, S.pins);
       const ms = performance.now() - t0; S.rate = n / Math.max(ms, 1e-3) * 1000;
       S.spfAuto = Math.max(4, Math.min(S.spf, Math.round(S.rate * 0.12)));
       try {
-        if (s.steps - S.lastExtract >= S.extractEvery || s.steps >= S.target) { extract(s.u, true); checkAnneal(); }
+        if (s.steps - S.lastExtract >= S.extractEvery || s.steps >= S.target) { extract(s.u, true); }
         showStep(s.steps);
       } catch (e) { console.error(e); setStatus('read-out error: ' + e.message); }
-      if (S.playing && s.steps >= S.target) { if (S.target >= S.maxSteps) { S.playing = false; $('btn-run').textContent = 'Run'; } else { S.target = Math.min(S.maxSteps, S.target + Math.max(S.spfAuto || S.spf, 50)); syncStepsUI(); } }
+      if (S.playing && s.steps >= S.target) { if (S.target >= S.maxSteps) { S.playing = false; syncRun(); } else { S.target = Math.min(S.maxSteps, S.target + Math.max(S.spfAuto || S.spf, 50)); syncStepsUI(); } }
       await yieldTask();
     }
   } catch (e) { console.error(e); setStatus('solver loop error: ' + e.message); }
@@ -260,7 +262,7 @@ function showStep(step) {
   if (S.carrierView === 'u') view.setFieldColors(u, 'viridis', U_RANGE[0], U_RANGE[1]);
   if (step < s.steps) { extract(u, false); S.scrubbed = true; }               // scrubbing back: lattice of that snapshot
   else if (S.scrubbed) { extract(s.u, false); S.scrubbed = false; }           // back at the live state (periodic extraction otherwise)
-  $('st-run').textContent = (S.seedPending ? '· waiting for the global seed ' : '') + `· step ${step} / ${s.steps} (t = ${s.t.toFixed(0)}) · ${S.seedMode === 'global' ? (S.solverGhat ? 'global seed in ĝ' : 'global seed') : `v${S.valence} seed`} · a = ${S.a.toFixed(3)}` + (S.anneal.active ? ` · anneal from ${S.anneal.startedAt}` : '') + (S.playing || s.steps < S.target ? ' · running' : '');
+  $('st-run').textContent = (S.seedPending ? '· waiting for the global seed ' : '') + `· step ${step} / ${s.steps} (t = ${s.t.toFixed(0)}) · ${S.seedMode === 'global' ? (S.solverGhat ? 'global seed in ĝ' : 'global seed') : `v${S.valence} seed`} · a = ${S.a.toFixed(3)}` + (S.playing || s.steps < S.target ? ' · running' : '');
   updateGrowthLegend(); drawChart();
 }
 
@@ -313,14 +315,24 @@ function updateDirectionReadout() {
 // ------------------------------------------------------------------ healing bound 5–7 pairs (heal.js)
 async function healNow() {
   const s = S.solver, c = S.carrier; if (!s || !c || S.healing || S.seedPending) return;
-  S.healing = true; S.playing = false; $('btn-run').textContent = 'Run'; $('btn-heal').disabled = true;
+  S.healing = true; S.playing = false; syncRun(); $('btn-heal').disabled = true;
   while (S.pumping) await yieldTask();                                          // let the running batch finish
   const el = $('ro-heal'), lines = []; let shown = 0;
   setStage('i-heal', 'warn');
-  const log = (m) => { lines.push(m); el.textContent = lines.slice(-4).join(' · '); setStatus('healing: ' + m); };
+  const log = (m) => { lines.push(m); el.textContent = lines.slice(-4).join(' · '); setStatus('healing: ' + m); console.log('[heal] ' + m); };
   const onStep = async (sv) => { if (S.pins.length) applyPins(sv, S.pins); if (sv.steps - shown >= 100) { shown = sv.steps; if (S.carrierView === 'u') view.setFieldColors(sv.u, 'viridis', U_RANGE[0], U_RANGE[1]); } await yieldTask(); };
   try {
-    const rep = await healPass(s, c, S.a, { hold: 60, every: 5, release: 400, max: 40, push: 0.4, pin: $('ck-heal-pin').checked, pins: S.pins, log, onStep });
+    const pin = $('ck-heal-pin').checked, rep = await healPass(s, c, S.a, { hold: 60, every: 5, release: 400, max: 40, push: 0.4, pin, pins: S.pins, log, onStep });
+    if ($('ck-heal-glide').checked && s === S.solver) {
+      // free 5–7 pairs: carried flip by flip to an anti-pair, a lone 5 / 7 or the rim, then the motifs that formed are taken apart
+      rep.glide = await glidePass(s, c, S.a, { hold: 60, every: 5, release: 150, settle: 300, pin, pins: S.pins, log: (m) => log('glide: ' + m), onStep });
+      const again = await healPass(s, c, S.a, { hold: 60, every: 5, release: 400, max: 20, push: 0.4, pin, pins: S.pins, log, onStep });
+      rep.healed += again.healed; rep.tried += again.tried; rep.pinned += again.pinned; for (const [k, v] of Object.entries(again.motifs)) rep.motifs[k] = (rep.motifs[k] || 0) + v;
+    }
+    if ($('ck-heal-climb').checked && s === S.solver) {
+      // lone 5s / 7s on flat ground walked one site at a time to where the surface holds their curvature
+      rep.climb = await climbPass(s, c, S.a, { hold: 60, every: 5, release: 400, pin, pins: S.pins, log: (m) => log('climb: ' + m), onStep });
+    }
     S.healReport = rep;
   } catch (e) { console.error(e); setStatus('heal error: ' + e.message); S.healError = e.message; }
   S.healing = false; $('btn-heal').disabled = false;
@@ -328,44 +340,39 @@ async function healNow() {
   renderHealReadout();
 }
 function clearPins() { S.pins = []; renderHealReadout(); }
+/** the Run button and its copy on the folded Setup rail always show the same state (one path sets both) */
+function syncRun() {
+  const p = !!S.playing; $('btn-run').textContent = p ? 'Pause' : 'Run';
+  const m = $('setup-mini-run'); if (m) { m.classList.toggle('running', p); m.setAttribute('aria-label', p ? 'Pause' : 'Run'); m.title = p ? 'Pause' : 'Run'; }
+}
+/** the Setup's canvases follow its width (fold, dock, resize, the section opened) */
+function redrawSetup() { try { drawChart(); drawPhase(); drawDtChart(); } catch (e) { /* not ready yet */ } }
+/** a sidebar widens by dragging its inner edge (double-click: default width; arrow keys when focused), as in WeaveSim:
+ *  `rz` the handle, `el` the sidebar, `cssVar` the width property set on #app, `key` its localStorage key, `leftOf()`
+ *  whether the sidebar sits left of the view, `lim` {min, floor, max, reserve}: the width stays within
+ *  [min, max(floor, min(max, window − reserve))] */
+function makeResizable(rz, el, cssVar, key, leftOf, lim) {
+  const app = $('app'), maxW = () => Math.max(lim.floor, Math.min(lim.max, window.innerWidth - lim.reserve));
+  const setWidth = (w, save = true) => { w = Math.round(Math.min(Math.max(w, lim.min), maxW())); app.style.setProperty(cssVar, `${w}px`); if (save) { try { localStorage.setItem(key, String(w)); } catch (e) { /* ignore */ } } };
+  try { const w = +localStorage.getItem(key); if (w > 0) setWidth(w, false); } catch (e) { /* ignore */ }
+  let drag = null;
+  rz.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, w: el.getBoundingClientRect().width }; rz.classList.add('drag'); try { rz.setPointerCapture(e.pointerId); } catch (err) { /* synthetic */ } e.preventDefault(); });
+  rz.addEventListener('pointermove', (e) => { if (!drag) return; const dx = e.clientX - drag.x; setWidth(drag.w + (leftOf() ? dx : -dx)); });
+  const end = () => { if (drag) { drag = null; rz.classList.remove('drag'); } };
+  rz.addEventListener('pointerup', end); rz.addEventListener('pointercancel', end);
+  rz.addEventListener('dblclick', () => { app.style.removeProperty(cssVar); try { localStorage.removeItem(key); } catch (e) { /* ignore */ } });
+  rz.addEventListener('keydown', (e) => { if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return; e.preventDefault(); const grow = (e.key === 'ArrowLeft') !== leftOf(); setWidth(el.getBoundingClientRect().width + (grow ? 24 : -24)); });
+}
 function renderHealReadout() {
   const el = $('ro-heal'), R = S.healReport; $('btn-pins-clear').hidden = !S.pins.length;
   if (S.healError) { el.textContent = 'heal error: ' + S.healError; S.healError = null; setStage('i-heal', 'bad'); return; }
-  if (!R) { el.textContent = S.pins.length ? `${S.pins.length} pinned` : 'not run yet — click Heal 5-7-5 once the surface is covered'; setStage('i-heal', S.pins.length ? 'warn' : 'idle'); return; }
+  if (!R) { el.textContent = S.pins.length ? `${S.pins.length} pinned` : 'not run yet — click Heal pairs once the surface is covered'; setStage('i-heal', S.pins.length ? 'warn' : 'idle'); return; }
   setStage('i-heal', S.pins.length || (!R.healed && R.tried) ? 'warn' : 'ok');
-  const m = R.motifs || {}, left = ['tri', 'flip'].filter(k => m[k]).map(k => `${m[k]} ${k === 'tri' ? '5-5-7 triangle' : 'flip'}${m[k] > 1 ? 's' : ''}`);
-  const found = Object.entries(m).map(([k, v]) => `${v} ${k}`).join(', ') || 'none';
-  el.textContent = `found ${found} · ${R.healed} healed of ${R.tried} tried` + (R.pinned ? ` · ${R.pinned} pinned` : '') + (S.pins.length ? ` · ${S.pins.length} pin${S.pins.length > 1 ? 's' : ''} held` : '') + (m.tri ? ` · ${m.tri} 5-5-7 triangle${m.tri > 1 ? 's' : ''} left to the anneal` : '');
-}
-
-// ------------------------------------------------------------------ two-stage schedule (grow → anneal)
-function checkAnneal() {
-  const A = S.anneal, s = S.solver; if (!A.on || A.active || !s) return;
-  let go = false;
-  if (A.when === 'step') go = s.steps >= A.step;
-  else { const H = S.history; if (H.length >= 4 && s.steps >= 500) { const p0 = H[H.length - 4][1], p1 = H[H.length - 1][1]; go = p1 > 10 && p1 <= p0 * 1.01; } }
-  if (go) startAnneal();
-}
-function startAnneal() {
-  const A = S.anneal, s = S.solver; if (!s || A.active) return;
-  A.active = true; A.startedAt = s.steps; s.setParams({ r: A.r2, b: A.b2 });
-  $('out-r').value = A.r2.toFixed(3); $('sl-r').value = A.r2; $('out-b').value = A.b2.toFixed(2); $('sl-b').value = A.b2;
-  $('st-backend').classList.add('anneal');
-  renderAnnealReadout(); setStatus(`annealing from step ${A.startedAt}: r = ${A.r2}, b = ${A.b2} (field kept)`); updatePrediction(); drawChart();
-}
-function stopAnneal(restore) {
-  const A = S.anneal; if (!A.active) { renderAnnealReadout(); return; }
-  A.active = false; A.startedAt = -1;
-  if (restore && S.solver) S.solver.setParams({ r: S.r, b: S.b });
-  $('out-r').value = S.r.toFixed(3); $('sl-r').value = S.r; $('out-b').value = S.b.toFixed(2); $('sl-b').value = S.b;
-  $('st-backend').classList.remove('anneal');
-  renderAnnealReadout();
-}
-function renderAnnealReadout() {
-  const A = S.anneal, el = $('ro-anneal');
-  el.innerHTML = !A.on ? 'off' : A.active ? `<span class="warn">annealing since step ${A.startedAt} at r = ${A.r2}, b = ${A.b2}</span>` : A.when === 'step' ? `armed: at step ${A.step}` : 'armed: when the peak count stops growing';
-  $('nb-anneal-step').hidden = A.when !== 'step';
-  setStage('i-anneal', !A.on ? 'idle' : A.active ? 'warn' : 'ok');
+  const m = R.motifs || {}, g = R.glide;
+  const found = Object.entries(m).map(([k, v]) => `${v} ${k === 'tri' ? '5-5-7' : k}`).join(', ') || 'none';
+  const glide = g ? ` · free pairs ${g.pairs}: ${[g.annihilated ? `${g.annihilated} annihilated` : '', g.absorbed ? `${g.absorbed} absorbed` : '', g.toRim ? `${g.toRim} to the rim` : '', g.skipped ? `${g.skipped} needed by the curvature` : '', g.left ? `${g.left} left` : ''].filter(Boolean).join(', ') || 'none'}` : '';
+  const cl = R.climb, climb = cl ? ` · lone 5s / 7s off their curvature ${cl.sites}: ${cl.sites ? `${cl.moved} moved${cl.pinned ? ` (${cl.pinned} pinned)` : ''}, ${cl.left} left` : 'none'}` : '';
+  el.textContent = `motifs ${found} · ${R.healed} healed of ${R.tried} tried` + (R.pinned ? ` · ${R.pinned} pinned` : '') + glide + climb + (S.pins.length ? ` · ${S.pins.length} pin${S.pins.length > 1 ? 's' : ''} held` : '');
 }
 
 function updateLaths() {
@@ -684,13 +691,13 @@ function updatePrediction() {
   const geo = geoFor(); if (!geo) { S.pred = null; return; }
   try {
     S.pred = predictGrowth(geo, { a: S.a, seedR: S.seedR, seedKind: S.seedKind, valence: S.valence, r: S.r, b: S.b, dt: S.dt,
-      anneal: { ...S.anneal, startedAt: S.anneal.active ? S.anneal.startedAt : -1 }, xmax: predXmax(), every: 50,
+      xmax: predXmax(), every: 50,
       siteScale: S.disp || !S.carrier ? 1 : 1 / (1 + (4 * Math.PI / (SQ3 * S.a) * S.carrier.h) ** 2 / 48) });
   } catch (e) { console.error(e); S.pred = null; }
   updateFrontReadout(); drawChart(); drawPhase(); drawDtChart();
 }
 function updateFrontReadout() {
-  const f = frontState(S.r, S.b, S.dt), p = S.pred, A = S.anneal;
+  const f = frontState(S.r, S.b, S.dt), p = S.pred;
   const seedOk = 0.82 * S.seedR > f.RcA * 1.15;
   $('ro-seedr').innerHTML = !Number.isFinite(f.RcA) ? `<span class="warn">no growing front at (r, b) = (${S.r}, ${S.b}): ${f.label}</span>`
     : `critical radius R<sub>c</sub> = ${f.RcA.toFixed(2)} a at (r, b): a patch smaller than R<sub>c</sub> shrinks · this seed ≈ ${(0.82 * S.seedR).toFixed(2)} a <span class="${seedOk ? 'ok' : 'warn'}">${seedOk ? 'grows' : 'is marginal — enlarge it'}</span>`;
@@ -698,18 +705,17 @@ function updateFrontReadout() {
   if (f.state === 'advance' && S.r > 0) t += ` · <span class="warn">r > 0: u = 0 is unstable, patterns nucleate away from the front</span>`;
   if (p && p.coveredAt >= 0) t += ` · ideal front covers the surface by ≈ step ${p.coveredAt.toLocaleString('en')}`;
   else if (p && f.state === 'advance') t += ` · not covered within ${predXmax().toLocaleString('en')} steps`;
-  if (A.on && p && p.ann) t += `\nanneal (r₂, b₂) = (${A.r2}, ${A.b2}): ${p.ann.state === 'advance' ? `front ${p.ann.vA100.toFixed(2)} a / 100 steps` : p.ann.label}${p.switchAt >= 0 && !A.active ? ` · switch predicted at ≈ step ${p.switchAt.toLocaleString('en')}` : ''}`;
   $('ro-front').innerHTML = t;
 }
 
 // ------------------------------------------------------------------ chart
 const CHART_PAD = { l: 30, r: 26, t: 8, b: 16 };
 const niceCeil = (x) => { const p = 10 ** Math.floor(Math.log10(Math.max(x, 1))), m = x / p; return ([1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find(k => m <= k + 1e-9)) * p; };
-/** x range: what is computed or targeted, plus the predicted coverage (and anneal stage), not the whole 20 k budget */
+/** x range: what is computed or targeted, plus the predicted coverage, not the whole 20 k budget */
 function chartXmax() {
   const s = S.solver ? S.solver.steps : 0, p = S.pred;
   let want = Math.max(s, S.target, 1000);
-  if (p && p.coveredAt >= 0) want = Math.max(want, p.coveredAt * 1.25, p.switchAt >= 0 ? p.switchAt + 0.5 * p.coveredAt : 0);
+  if (p && p.coveredAt >= 0) want = Math.max(want, p.coveredAt * 1.25);
   return Math.min(Math.max(S.maxSteps, s), niceCeil(want * 1.02));
 }
 function drawChart() {
@@ -727,13 +733,6 @@ function drawChart() {
   const X = (st) => pad.l + (W - pad.l - pad.r) * st / xmax, Y = (val) => H - pad.b - (H - pad.t - pad.b) * val / ymax, Ys = (val) => H - pad.b - (H - pad.t - pad.b) * val / ys;
   ctx.font = '10px IBM Plex Mono, monospace';
   if (S.solver && S.solver.steps > 0) { ctx.fillStyle = border; ctx.globalAlpha = 0.35; ctx.fillRect(X(0), pad.t, X(Math.min(S.solver.steps, xmax)) - X(0), H - pad.t - pad.b); ctx.globalAlpha = 1; }
-  const annAt = S.anneal.active ? S.anneal.startedAt : (S.anneal.on && P && P.switchAt >= 0 ? P.switchAt : -1);
-  if (annAt >= 0 && annAt <= xmax) {                                          // the anneal stage (tracked: tinted; predicted: dotted)
-    const x0 = X(annAt), x1 = S.anneal.active ? X(Math.min(S.solver.steps, xmax)) : X(xmax);
-    ctx.fillStyle = warn; ctx.globalAlpha = S.anneal.active ? 0.12 : 0.06; ctx.fillRect(x0, pad.t, Math.max(1, x1 - x0), H - pad.t - pad.b); ctx.globalAlpha = 1;
-    ctx.strokeStyle = warn; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(x0, pad.t); ctx.lineTo(x0, H - pad.b); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = warn; ctx.textAlign = 'left'; ctx.fillText('anneal', x0 + 3, pad.t + 9);
-  }
   // axes
   ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, H - pad.b); ctx.lineTo(W - pad.r, H - pad.b); ctx.lineTo(W - pad.r, pad.t); ctx.stroke();
   ctx.fillStyle = dim; ctx.textAlign = 'right'; ctx.fillText(String(ymax), pad.l - 4, pad.t + 8); ctx.fillText('0', pad.l - 4, H - pad.b);
@@ -760,101 +759,140 @@ function drawChart() {
   if (S.solver) { const x = X(Math.min(S.shownStep >= 0 ? S.shownStep : 0, xmax)); ctx.strokeStyle = dim; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, H - pad.b); ctx.stroke(); ctx.setLineDash([]); }
 }
 
-// ------------------------------------------------------------------ (r, b) map: front speed from the flat table
-const PH = { r0: -0.5, r1: 0.1, b0: 0.5, b1: 2.0, pad: { l: 34, r: 8, t: 8, b: 24 } };
-let phaseImg = null, phaseKey = '';
+// ------------------------------------------------------------------ (r, b) map: the measured regions of a flat front
+//   hatched: the seed dies · grey: pinned (survives, does not grow) · blue: the front advances, in speed bands (light
+//   theme: darker = faster; dark theme: lighter = faster) · dots above r = 0: u = 0 unstable, patterns nucleate everywhere.
+//   Edges from frontspeed_table.js BOUND (bisection), speeds from its table measured from the growth edge.
+const PH = { r0: -0.5, r1: 0.1, b0: 0.5, b1: 2.0, aspect: 0.5, pad: { l: 40, r: 8, t: 8, b: 24 } };
+const PH_RAMP = {                                                              // the blue sequential ramp, slow → fast
+  light: ['#cde2fb', '#b7d3f6', '#9ec5f4', '#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab'],
+  dark: ['#0d366b', '#104281', '#184f95', '#1c5cab', '#256abf', '#2a78d6', '#3987e5', '#5598e7', '#6da7ec', '#86b6ef'],
+};
+const PH_PIN = { light: '#c4c4bf', dark: '#5a5d62' };                          // neutral grey: nothing moves
+let phaseImg = null, phaseKey = '', phaseHover = null;
+const hexRGB = (h) => { const m = /^#?([0-9a-f]{6})$/i.exec(String(h).trim()); const n = m ? parseInt(m[1], 16) : 0x888888; return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+/** speed bands in lattice edges per 100 steps at this dt: a round step, at most 9 bands up to the fastest corner */
+function phaseBands(dt) {
+  const toA = Math.sqrt(3) / (4 * Math.PI) * dt * 100 * dtFactor(dt), vmax = speedColumn(PH.b1)(PH.r1) * toA;
+  const step = [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5].find((s) => s >= vmax / 9) || 10;
+  const K = Math.max(1, Math.ceil(vmax / step - 1e-9));
+  return { toA, step, K, idx: (k) => (K <= 1 ? 0 : Math.round(k * 9 / (K - 1))) };
+}
 function drawPhase(live = null) {
   const cv = $('phase'); if (!cv) return;
   const ctx = cv.getContext('2d'), dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const W = cv.clientWidth || 372, H = Math.round(W * 0.5);
+  const W = cv.clientWidth || 372, H = Math.round(W * PH.aspect);
   if (cv.style.height !== H + 'px') cv.style.height = H + 'px';
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); phaseKey = ''; }
   const css = getComputedStyle(document.documentElement), cv_ = (n) => css.getPropertyValue(n).trim();
+  const dark = cv_('--scheme') === 'dark', ramp = PH_RAMP[dark ? 'dark' : 'light'];
   const pad = PH.pad, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
   const X = (b) => pad.l + pw * (b - PH.b0) / (PH.b1 - PH.b0), Y = (r) => pad.t + ph * (PH.r1 - r) / (PH.r1 - PH.r0);
-  const toA = Math.sqrt(3) / (4 * Math.PI) * S.dt * 100;                        // q0-units → lattice edges per 100 steps
-  const key = `${W}x${H}@${dpr}|${S.dt}|${cv_('--accent')}|${cv_('--panel-2')}`;
+  const bands = phaseBands(S.dt);
+  const key = `${W}x${H}@${dpr}|${S.dt}|${dark}|${cv_('--panel')}|${cv_('--border')}`;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  if (key !== phaseKey) {                                                       // the map itself, cached as an image
-    const img = ctx.createImageData(cv.width, cv.height), rgb = (h) => { const m = /^#?([0-9a-f]{6})$/i.exec(h); const n = m ? parseInt(m[1], 16) : 0x888888; return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
-    const lo = rgb(cv_('--panel-2')), hi = rgb(cv_('--accent')), pin = rgb(cv_('--warn')), bg = rgb(cv_('--panel')), ln = rgb(cv_('--border'));
-    const levels = [0.25, 0.5, 0.75, 1.0];
-    const spd = (px, py) => { const b = PH.b0 + (px / dpr - pad.l) / pw * (PH.b1 - PH.b0), r = PH.r1 - (py / dpr - pad.t) / ph * (PH.r1 - PH.r0); const v = mapValue(r, b); return v < -0.075 ? null : v * toA; };
-    for (let py = 0; py < cv.height; py++) for (let px = 0; px < cv.width; px++) {
-      const o = 4 * (py * cv.width + px), x = px / dpr, y = py / dpr;
-      let c = bg;
-      if (x >= pad.l && x <= pad.l + pw && y >= pad.t && y <= pad.t + ph) {
-        const s = spd(px, py);
-        if (s === null) { c = ((px + py) % Math.round(7 * dpr) < dpr) ? ln : bg; }                         // dies: hatched
-        else if (s < 0.01 * toA) { const t = 0.32; c = [lo[0] + t * (pin[0] - lo[0]), lo[1] + t * (pin[1] - lo[1]), lo[2] + t * (pin[2] - lo[2])]; }   // pinned / retreating
-        else { const t = Math.min(1, 0.12 + 0.88 * s / 1.6); c = [lo[0] + t * (hi[0] - lo[0]), lo[1] + t * (hi[1] - lo[1]), lo[2] + t * (hi[2] - lo[2])];
-          const s2 = spd(px + dpr, py), s3 = spd(px, py + dpr);
-          for (const L of levels) if ((s2 !== null && (s - L) * (s2 - L) < 0) || (s3 !== null && (s - L) * (s3 - L) < 0)) { c = [c[0] * 0.75, c[1] * 0.75, c[2] * 0.75]; break; } }
+  if (key !== phaseKey) {                                                       // the regions, cached as an image
+    const cw = cv.width, chh = cv.height, img = ctx.createImageData(cw, chh), D8 = img.data;
+    const rgb = ramp.map(hexRGB), pin = hexRGB(PH_PIN[dark ? 'dark' : 'light']), bg = hexRGB(cv_('--panel')), ln = hexRGB(cv_('--border'));
+    const per = Math.max(4, Math.round(7 * dpr)), lw = Math.max(1, Math.round(dpr)), SUB = 4;
+    const x0 = pad.l * dpr, x1 = (pad.l + pw) * dpr, y0 = pad.t * dpr, y1 = (pad.t + ph) * dpr;
+    for (let px = 0; px < cw; px++) {
+      const inX = px + 0.5 >= x0 && px + 0.5 <= x1;
+      const b = PH.b0 + ((px + 0.5) / dpr - pad.l) / pw * (PH.b1 - PH.b0), rd = rDie(b), rg = rGrow(b), sp = speedColumn(b);
+      for (let py = 0; py < chh; py++) {
+        const o = 4 * (py * cw + px);
+        let c0 = bg[0], c1 = bg[1], c2 = bg[2];
+        if (inX && py + 0.5 >= y0 && py + 0.5 <= y1) {
+          const hatch = (px + py) % per < lw ? ln : bg;                        // the seed dies: hatched
+          c0 = c1 = c2 = 0;
+          for (let s = 0; s < SUB; s++) {                                       // 4 samples down the pixel: smooth edges
+            const r = PH.r1 - ((py + (s + 0.5) / SUB) / dpr - pad.t) / ph * (PH.r1 - PH.r0);
+            const c = r < rd ? hatch : r < rg ? pin : rgb[bands.idx(Math.min(bands.K - 1, Math.floor(sp(r) * bands.toA / bands.step)))];
+            c0 += c[0]; c1 += c[1]; c2 += c[2];
+          }
+          c0 /= SUB; c1 /= SUB; c2 /= SUB;
+        }
+        D8[o] = c0; D8[o + 1] = c1; D8[o + 2] = c2; D8[o + 3] = 255;
       }
-      img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
     }
     phaseImg = img; phaseKey = key;
   }
   ctx.putImageData(phaseImg, 0, 0);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const dim = cv_('--dim'), fg = cv_('--fg'), warn = cv_('--warn'), acc = cv_('--accent'), panel = cv_('--panel');
+  const dim = cv_('--dim'), fg = cv_('--fg'), warn = cv_('--warn'), acc = cv_('--accent'), panel = cv_('--panel'), border = cv_('--border');
   ctx.font = '10px IBM Plex Mono, monospace';
-  // r = 0: above it u = 0 is linearly unstable
-  ctx.strokeStyle = warn; ctx.lineWidth = 1.2; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(X(PH.b0), Y(0)); ctx.lineTo(X(PH.b1), Y(0)); ctx.stroke(); ctx.setLineDash([]);
-  const tag = (t, x, y, col, align = 'left') => { ctx.textAlign = align; const w = ctx.measureText(t).width, x0 = align === 'right' ? x - w : x; ctx.fillStyle = panel; ctx.globalAlpha = 0.82; ctx.fillRect(x0 - 2, y - 9, w + 4, 12); ctx.globalAlpha = 1; ctx.fillStyle = col; ctx.fillText(t, x, y); };
-  tag('r > 0: u = 0 unstable, patterns everywhere', X(PH.b0) + 4, Y(0) - 4, warn);
+  const tag = (t, x, y, col, align = 'left') => { ctx.textAlign = align; const w = ctx.measureText(t).width, x0 = align === 'right' ? x - w : align === 'center' ? x - w / 2 : x; ctx.fillStyle = panel; ctx.globalAlpha = 0.85; ctx.fillRect(x0 - 2, y - 9, w + 4, 12); ctx.globalAlpha = 1; ctx.fillStyle = col; ctx.fillText(t, x, y); };
+  // r > 0: u = 0 is linearly unstable — a lattice of dots: spots appear everywhere, not only at the front
+  { const sp = 6, hy = sp * Math.sqrt(3) / 2;
+    ctx.save(); ctx.beginPath(); ctx.rect(pad.l + 1, pad.t + 1, pw - 1, Y(0) - pad.t - 1); ctx.clip();
+    ctx.fillStyle = panel; ctx.globalAlpha = 0.85; ctx.beginPath();
+    for (let k = 0, y = Y(0) - hy / 2; y > pad.t - hy; k++, y -= hy) for (let x = pad.l + 2 + (k % 2 ? sp / 2 : 0); x < pad.l + pw; x += sp) { ctx.moveTo(x + 1, y); ctx.arc(x, y, 1, 0, 2 * Math.PI); }
+    ctx.fill(); ctx.restore(); ctx.globalAlpha = 1; }
+  ctx.strokeStyle = fg; ctx.globalAlpha = 0.6; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(X(PH.b0), Math.round(Y(0)) + 0.5); ctx.lineTo(X(PH.b1), Math.round(Y(0)) + 0.5); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
   // region labels
-  tag('seed dies', X(0.56), Y(-0.36), dim);
-  tag('pinned', X(1.98), Y(-0.44), dim, 'right');
+  tag('r > 0 · patterns nucleate everywhere', X(PH.b0) + 5, Y(0.05) + 4, fg);
   tag('front advances', X(1.98), Y(-0.15), fg, 'right');
-  // axes
-  ctx.strokeStyle = cv_('--border'); ctx.strokeRect(pad.l + 0.5, pad.t + 0.5, pw, ph);
-  ctx.fillStyle = dim; ctx.textAlign = 'center';
-  for (const b of [0.5, 1, 1.5, 2]) { ctx.fillText(b.toFixed(1), X(b), H - pad.b + 11); }
-  ctx.fillText('b (quadratic)', pad.l + pw / 2, H - 2);
-  ctx.textAlign = 'right'; for (const r of [-0.5, -0.3, -0.1, 0.1]) ctx.fillText(r.toFixed(1), pad.l - 4, Y(r) + 3);
-  ctx.save(); ctx.translate(9, pad.t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center'; ctx.fillText('r', 0, 0); ctx.restore();
-  // operating points
-  const r = live && live.r !== undefined ? live.r : (S.anneal.active ? S.r : S.r), b = live && live.b !== undefined ? live.b : S.b;
-  const pg = { x: X(b), y: Y(r) };
-  if (S.anneal.on) {
-    const pa = { x: X(S.anneal.b2), y: Y(S.anneal.r2) };
-    ctx.strokeStyle = warn; ctx.lineWidth = 1.2; ctx.setLineDash([3, 2]); ctx.beginPath(); ctx.moveTo(pg.x, pg.y); ctx.lineTo(pa.x, pa.y); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = warn; ctx.strokeStyle = panel; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(pa.x, pa.y - 6); ctx.lineTo(pa.x + 6, pa.y); ctx.lineTo(pa.x, pa.y + 6); ctx.lineTo(pa.x - 6, pa.y); ctx.closePath(); ctx.stroke(); ctx.fill();
-    ctx.textAlign = pa.x < pad.l + 60 ? 'left' : 'right'; ctx.fillText('anneal', pa.x + (pa.x < pad.l + 60 ? 9 : -9), pa.y + 3);
+  tag('pinned', X(1.98), Y(-0.45), fg, 'right');
+  tag('seed dies', X(0.54), Y(-0.2), dim);
+  // key: the speed bands, in the hatched corner
+  { const n = bands.K, sw = Math.max(8, Math.min(13, (X(1.05) - X(0.55)) / n)), kx = X(0.55), ky = Y(-0.31);
+    ctx.fillStyle = panel; ctx.globalAlpha = 0.92; ctx.fillRect(kx - 4, ky - 13, n * sw + 8, 34); ctx.globalAlpha = 1;
+    ctx.fillStyle = dim; ctx.textAlign = 'left'; ctx.fillText('front, a / 100 steps', kx, ky - 3);
+    for (let k = 0; k < n; k++) { ctx.fillStyle = ramp[bands.idx(k)]; ctx.fillRect(kx + k * sw, ky, sw - 2, 7); }
+    ctx.fillStyle = dim; ctx.textAlign = 'center';
+    const every = [1, 2, 4].find((e) => e * sw >= 22) || 4;                    // tick labels at least 22 px apart
+    for (let k = 0; k <= n; k += every) ctx.fillText(String(+(k * bands.step).toFixed(2)), kx + k * sw - 1, ky + 17);
   }
+  // axes
+  ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.strokeRect(pad.l + 0.5, pad.t + 0.5, pw, ph);
+  ctx.fillStyle = dim; ctx.textAlign = 'center';
+  for (const b of [0.5, 1, 1.5, 2]) ctx.fillText(b.toFixed(1), X(b), H - pad.b + 11);
+  ctx.fillText('b (quadratic)', pad.l + pw / 2, H - 2);
+  ctx.textAlign = 'right'; for (const r of [-0.5, -0.4, -0.3, -0.2, -0.1, 0, 0.1]) ctx.fillText(r === 0 ? '0' : r.toFixed(1), pad.l - 4, Y(r) + 3);
+  ctx.save(); ctx.translate(8, pad.t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center'; ctx.fillText('r', 0, 0); ctx.restore();
+  // operating points
+  const r = live && live.r !== undefined ? live.r : S.r, b = live && live.b !== undefined ? live.b : S.b;
+  const pg = { x: X(b), y: Y(r) };
   ctx.fillStyle = acc; ctx.strokeStyle = panel; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(pg.x, pg.y, 5.5, 0, 2 * Math.PI); ctx.stroke(); ctx.fill();
   const f = frontState(r, b, S.dt);
   const lab = f.state === 'advance' ? `${f.vA100.toFixed(2)} a/100 steps` : f.state;
   tag(lab, pg.x + (pg.x > pad.l + pw - 110 ? -9 : 9), pg.y - 8, fg, pg.x > pad.l + pw - 110 ? 'right' : 'left');
-  // colour key
-  tag('iso-lines 0.25 · 0.5 · 0.75 · 1 a / 100 steps', pad.l + 4, pad.t + ph - 4, dim);
+  // hover: the reading at the pointer
+  if (phaseHover && !live) {
+    const hr = phaseHover.r, hb = phaseHover.b, fh = frontState(hr, hb, S.dt), hx = X(hb), hy = Y(hr);
+    ctx.strokeStyle = fg; ctx.globalAlpha = 0.35; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(Math.round(hx) + 0.5, pad.t); ctx.lineTo(Math.round(hx) + 0.5, pad.t + ph); ctx.moveTo(pad.l, Math.round(hy) + 0.5); ctx.lineTo(pad.l + pw, Math.round(hy) + 0.5); ctx.stroke(); ctx.globalAlpha = 1;
+    const lines = [`r ${hr.toFixed(3)} · b ${hb.toFixed(2)}`,
+      fh.state === 'dies' ? 'the seed dies (u = 0 wins)' : fh.state === 'pinned' ? 'pinned: survives, does not grow' : `front ${fh.vA100.toFixed(2)} a / 100 steps`];
+    if (fh.state === 'advance') lines.push(`critical radius ${Number.isFinite(fh.RcA) ? fh.RcA.toFixed(1) : '∞'} a`);
+    if (hr > 0) lines.push('u = 0 unstable: nucleates everywhere');
+    const w = Math.max(...lines.map((t) => ctx.measureText(t).width)) + 10, h = 13 * lines.length + 5;
+    let bx = hx + 10, by = hy - h - 8; if (bx + w > W - 2) bx = hx - 10 - w; if (by < 2) by = hy + 10;
+    ctx.fillStyle = panel; ctx.globalAlpha = 0.96; ctx.fillRect(bx, by, w, h); ctx.globalAlpha = 1;
+    ctx.strokeStyle = border; ctx.strokeRect(bx + 0.5, by + 0.5, w - 1, h - 1);
+    ctx.textAlign = 'left'; lines.forEach((t, i) => { ctx.fillStyle = i ? fg : dim; ctx.fillText(t, bx + 5, by + 13 + 13 * i); });
+  }
 }
 function bindPhase() {
-  const cv = $('phase'); let drag = null;
-  const at = (e) => { const r = cv.getBoundingClientRect(), pad = PH.pad, pw = r.width - pad.l - pad.r, ph = r.width * 0.5 - pad.t - pad.b;
-    const b = PH.b0 + (e.clientX - r.left - pad.l) / pw * (PH.b1 - PH.b0), rr = PH.r1 - (e.clientY - r.top - pad.t) / ph * (PH.r1 - PH.r0);
-    return { b: Math.round(Math.max(0.5, Math.min(2, b)) * 100) / 100, r: Math.round(Math.max(-0.5, Math.min(0.1, rr)) * 200) / 200 }; };
-  const near = (e, b, r) => { const rect = cv.getBoundingClientRect(), pad = PH.pad, pw = rect.width - pad.l - pad.r, ph = rect.width * 0.5 - pad.t - pad.b;
-    const x = rect.left + pad.l + pw * (b - PH.b0) / (PH.b1 - PH.b0), y = rect.top + pad.t + ph * (PH.r1 - r) / (PH.r1 - PH.r0); return Math.hypot(e.clientX - x, e.clientY - y); };
-  const apply = (which, p, final) => {
-    if (which === 'anneal') {
-      S.anneal.r2 = p.r; S.anneal.b2 = p.b; $('nb-r2').value = p.r; $('nb-b2').value = p.b;
-      if (final) { if (S.anneal.active && S.solver) S.solver.setParams({ r: p.r, b: p.b }); renderAnnealReadout(); updatePrediction(); } else drawPhase();
-      return;
-    }
+  const cv = $('phase'); let drag = false;
+  const geo = () => { const rc = cv.getBoundingClientRect(), pad = PH.pad; return { rc, pad, pw: rc.width - pad.l - pad.r, ph: Math.round(rc.width * PH.aspect) - pad.t - pad.b }; };
+  const raw = (e) => { const { rc, pad, pw, ph } = geo(); return { b: PH.b0 + (e.clientX - rc.left - pad.l) / pw * (PH.b1 - PH.b0), r: PH.r1 - (e.clientY - rc.top - pad.t) / ph * (PH.r1 - PH.r0) }; };
+  const at = (e) => { const p = raw(e); return { b: Math.round(Math.max(0.5, Math.min(2, p.b)) * 100) / 100, r: Math.round(Math.max(-0.5, Math.min(0.1, p.r)) * 200) / 200 }; };
+  const apply = (p, final) => {
     $('sl-r').value = p.r; $('out-r').value = p.r.toFixed(3); $('sl-b').value = p.b; $('out-b').value = p.b.toFixed(2);
     if (!final) { drawPhase({ r: p.r, b: p.b }); return; }
-    if (S.anneal.active) { S.anneal.r2 = p.r; S.anneal.b2 = p.b; $('nb-r2').value = p.r; $('nb-b2').value = p.b; } else { S.r = p.r; S.b = p.b; }
-    if (S.solver) S.solver.setParams({ r: p.r, b: p.b }); setStatus(`r = ${p.r}, b = ${p.b} (operator rebuilt, field kept)`); renderAnnealReadout(); updatePrediction();
+    S.r = p.r; S.b = p.b;
+    if (S.solver) S.solver.setParams({ r: p.r, b: p.b }); setStatus(`r = ${p.r}, b = ${p.b} (operator rebuilt, field kept)`); updatePrediction();
   };
-  cv.addEventListener('pointerdown', (e) => {
-    const p = at(e); drag = S.anneal.on && near(e, S.anneal.b2, S.anneal.r2) < near(e, S.b, S.r) ? 'anneal' : 'grow';
-    cv.setPointerCapture(e.pointerId); apply(drag, p, false);
+  cv.addEventListener('pointerdown', (e) => { const p = at(e); phaseHover = null; drag = true; cv.setPointerCapture(e.pointerId); apply(p, false); });
+  cv.addEventListener('pointermove', (e) => {
+    if (drag) { apply(at(e), false); return; }
+    const p = raw(e), inside = p.b >= PH.b0 && p.b <= PH.b1 && p.r >= PH.r0 && p.r <= PH.r1;
+    if (inside || phaseHover) { phaseHover = inside ? p : null; drawPhase(); }
   });
-  cv.addEventListener('pointermove', (e) => { if (drag) apply(drag, at(e), false); });
-  const end = (e) => { if (!drag) return; apply(drag, at(e), true); drag = null; };
-  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', () => { drag = null; drawPhase(); });
+  cv.addEventListener('pointerleave', () => { if (phaseHover && !drag) { phaseHover = null; drawPhase(); } });
+  const end = (e) => { if (!drag) return; apply(at(e), true); drag = false; };
+  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', () => { drag = false; drawPhase(); });
 }
 
 // ------------------------------------------------------------------ dt: steps to cover against the front-speed error
@@ -1013,7 +1051,7 @@ function chartStepAt(clientX) {
 // ------------------------------------------------------------------ export
 function exportLattice() {
   const lat = S.lat, c = S.carrier; if (!lat) { setStatus('nothing to export yet'); return; }
-  const lines = [`# LocalSH ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${S.solver.steps} steps, r = ${S.r}, b = ${S.b}${S.anneal.active ? `, annealed from step ${S.anneal.startedAt} at r = ${S.anneal.r2}, b = ${S.anneal.b2}` : ''}, sum(6-n) interior = ${S.summary.charge}`];
+  const lines = [`# LocalSH ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${S.solver.steps} steps, r = ${S.r}, b = ${S.b}, sum(6-n) interior = ${S.summary.charge}`];
   const P = lat.P; for (let i = 0; i < P.length / 3; i++) lines.push(`v ${P[3 * i].toFixed(6)} ${P[3 * i + 1].toFixed(6)} ${P[3 * i + 2].toFixed(6)}`);
   const T = lat.tris; for (let t = 0; t < T.length / 3; t++) lines.push(`f ${T[3 * t] + 1} ${T[3 * t + 1] + 1} ${T[3 * t + 2] + 1}`);
   const sing = S.summary.singular.map(i => `# singular ${i}: valence ${lat.valence[i]} charge ${6 - lat.valence[i]}`);
@@ -1066,21 +1104,21 @@ function bind() {
     reseedNow();
   });
   $('btn-rosy').addEventListener('click', () => { if (S.seedMode !== 'global') { document.querySelector('#seed-mode .chip[data-mode="global"]').click(); } else globalField({ applySeed: true, force: true }); });
-  $('sel-cones').addEventListener('change', (e) => { S.coneMode = e.target.value; setStatus(`size field: ${CONE_LABEL[S.coneMode]}`); if (S.seedMode === 'global') reseedNow(); });
+  $('ck-mbo').addEventListener('change', (e) => { S.mbo = e.target.checked; setStatus(`global field: ${S.mbo ? 'relaxed to unit length (singularities on the curvature)' : 'plain eigenvector'}`); if (S.seedMode === 'global') reseedNow(); });
+  $('sel-cones').addEventListener('change', (e) => { S.coneMode = e.target.value; $('row-cone-flat').hidden = S.coneMode === 'uniform'; setStatus(`size field: ${CONE_LABEL[S.coneMode]}`); if (S.seedMode === 'global') reseedNow(); });
+  $('ck-cone-flat').addEventListener('change', (e) => { S.coneFlat = e.target.checked; setStatus(`size field: ${S.coneFlat ? 'flat on the developable parts (lattice edge a there)' : 'free everywhere'}`); if (S.seedMode === 'global' && S.coneMode !== 'uniform') reseedNow(); });
   $('cb-disp').addEventListener('change', (e) => { S.disp = e.target.checked; if (S.solver) S.solver.setParams({ dispersion: S.disp }); updateDensityReadout(); updatePrediction(); setStatus(S.disp ? 'operator corrected for the carrier dispersion (edge = a), field kept' : 'operator uncorrected (edge ≈ a / (1 + (q0 h)²/48)), field kept'); });
   // solve
   $('sl-steps').addEventListener('input', (e) => { S.target = +e.target.value; $('out-steps').value = S.target; if (S.solver && S.solver.steps < S.target) pump(); });
-  $('btn-run').addEventListener('click', () => { S.playing = !S.playing; $('btn-run').textContent = S.playing ? 'Pause' : 'Run'; if (S.playing && S.solver && S.target <= S.solver.steps) { S.target = Math.min(S.maxSteps, S.solver.steps + S.spf); syncStepsUI(); } });
+  $('btn-run').addEventListener('click', () => { S.playing = !S.playing; syncRun(); if (S.playing && S.solver && S.target <= S.solver.steps) { S.target = Math.min(S.maxSteps, S.solver.steps + S.spf); syncStepsUI(); } });
   $('btn-plus').addEventListener('click', () => { if (S.solver) { S.target = Math.min(S.maxSteps, S.solver.steps + 500); syncStepsUI(); } });
-  $('btn-reseed').addEventListener('click', () => { S.playing = false; $('btn-run').textContent = 'Run'; reseedNow(); });
+  $('btn-reseed').addEventListener('click', () => { S.playing = false; syncRun(); reseedNow(); });
   $('btn-export').addEventListener('click', exportLattice);
   const paramSlider = (id, out, key, digits) => {
     $(id).addEventListener('input', (e) => { $(out).value = (+e.target.value).toFixed(digits); drawPhase(key === 'dt' ? null : { [key]: +e.target.value }); if (key === 'dt') drawDtChart(+e.target.value); });
     $(id).addEventListener('change', (e) => {
-      const v = +e.target.value;
-      if (S.anneal.active && (key === 'r' || key === 'b')) { S.anneal[key + '2'] = v; $('nb-' + key + '2').value = v; }   // while annealing the sliders drive the anneal stage
-      else S[key] = v;
-      if (S.solver) S.solver.setParams({ [key]: v }); setStatus(`${key} = ${v} (operator rebuilt, field kept)`); renderAnnealReadout(); updatePrediction();
+      const v = +e.target.value; S[key] = v;
+      if (S.solver) S.solver.setParams({ [key]: v }); setStatus(`${key} = ${v} (operator rebuilt, field kept)`); updatePrediction();
     });
   };
   paramSlider('sl-r', 'out-r', 'r', 3); paramSlider('sl-b', 'out-b', 'b', 2); paramSlider('sl-dt', 'out-dt', 'dt', 2);
@@ -1088,14 +1126,9 @@ function bind() {
   $('nb-spf').addEventListener('change', (e) => { S.spf = Math.max(1, Math.min(200, +e.target.value | 0)); S.spfAuto = 0; });
   $('nb-cg').addEventListener('change', (e) => { S.cgManual = true; S.cgIters = Math.max(4, Math.min(60, +e.target.value | 0)); if (S.solver) S.solver.cgIters = S.cgIters; });
   for (const ch of document.querySelectorAll('#refine-chips .chip')) ch.addEventListener('click', () => setRefine(+ch.dataset.level));
-  // anneal
+  // heal
   $('btn-heal').addEventListener('click', () => healNow());
   $('btn-pins-clear').addEventListener('click', clearPins);
-  $('ck-anneal').addEventListener('change', (e) => { S.anneal.on = e.target.checked; if (!S.anneal.on) stopAnneal(true); renderAnnealReadout(); updatePrediction(); });
-  $('nb-r2').addEventListener('change', (e) => { S.anneal.r2 = +e.target.value; if (S.anneal.active && S.solver) { S.solver.setParams({ r: S.anneal.r2 }); } renderAnnealReadout(); updatePrediction(); });
-  $('nb-b2').addEventListener('change', (e) => { S.anneal.b2 = +e.target.value; if (S.anneal.active && S.solver) { S.solver.setParams({ b: S.anneal.b2 }); } renderAnnealReadout(); updatePrediction(); });
-  $('sel-anneal-when').addEventListener('change', (e) => { S.anneal.when = e.target.value; renderAnnealReadout(); updatePrediction(); });
-  $('nb-anneal-step').addEventListener('change', (e) => { S.anneal.step = Math.max(100, +e.target.value | 0); renderAnnealReadout(); updatePrediction(); });
   bindPhase();
   for (const ch of document.querySelectorAll('#strain-chips .chip')) ch.addEventListener('click', () => { S.strainFam = +ch.dataset.fam; for (const o of document.querySelectorAll('#strain-chips .chip')) o.classList.toggle('on', o === ch); updateDirectionLayers(); });
   $('nb-strain-range').addEventListener('change', (e) => { S.strainRange = Math.max(0.02, Math.min(0.6, +e.target.value / 100)); updateDirectionLayers(); });
@@ -1165,9 +1198,29 @@ function bind() {
   $('display-toggle').addEventListener('click', () => setDisplayOpen(appEl.classList.contains('display-closed')));
   $('display-dock').addEventListener('click', () => setDisplayDock(!appEl.classList.contains('display-left')));
   try { setDisplayDock(localStorage.getItem('localsh-display-left') === '1'); setDisplayOpen(localStorage.getItem('localsh-display-open') !== '0'); } catch (e) { /* ignore */ }
-  // collapsible sections: remember what is folded
+  // the Setup sidebar (as in WeaveSim): folds to a rail that keeps Run / Pause and Re-seed, docks left or right of the
+  // view, widens by its inner edge; fold, side and width are remembered
+  const setSetupOpen = (open) => { appEl.classList.toggle('setup-closed', !open); $('setup-toggle').setAttribute('aria-expanded', String(open)); try { localStorage.setItem('localsh-setup-open', open ? '1' : '0'); } catch (e) { /* ignore */ } if (open) requestAnimationFrame(redrawSetup); };
+  const setSetupDock = (right) => { appEl.classList.toggle('setup-right', right); try { localStorage.setItem('localsh-setup-right', right ? '1' : '0'); } catch (e) { /* ignore */ } };
+  $('setup-toggle').addEventListener('click', () => setSetupOpen(appEl.classList.contains('setup-closed')));
+  $('setup-dock').addEventListener('click', () => setSetupDock(!appEl.classList.contains('setup-right')));
+  $('setup-mini-run').addEventListener('click', () => $('btn-run').click());                 // proxies: the real buttons do the work
+  $('setup-mini-reseed').addEventListener('click', () => $('btn-reseed').click());
+  try { setSetupDock(localStorage.getItem('localsh-setup-right') === '1'); setSetupOpen(localStorage.getItem('localsh-setup-open') !== '0'); } catch (e) { /* ignore */ }
+  makeResizable($('setup-resize'), $('panel'), '--panel-open-w', 'localsh-setup-w', () => !appEl.classList.contains('setup-right'), { min: 300, floor: 340, max: 720, reserve: 520 });
+  { let pend = false; new ResizeObserver(() => { if (pend) return; pend = true; requestAnimationFrame(() => { pend = false; redrawSetup(); }); }).observe($('setup-body')); }
+  syncRun();
+  // the Setup's numbered sections are an accordion (<details name="setup">: one open at a time); the open one is remembered
+  const secs = [...document.querySelectorAll('#sections > details.sec')];
+  try { const saved = localStorage.getItem('localsh-setup-section'); if (saved !== null) secs.forEach((d) => { d.open = d.id === saved; }); } catch (e) { /* ignore */ }
+  secs.forEach((d) => d.addEventListener('toggle', () => {
+    try { if (d.open) localStorage.setItem('localsh-setup-section', d.id); else if (!secs.some(x => x.open)) localStorage.setItem('localsh-setup-section', ''); } catch (e) { /* ignore */ }
+    if (d.open) requestAnimationFrame(redrawSetup);
+  }));
+  // other collapsible sections: remember what is folded
   let folds = {}; try { folds = JSON.parse(localStorage.getItem('localsh-folds') || '{}'); } catch (e) { folds = {}; }
   for (const d of document.querySelectorAll('details.sec')) {
+    if (secs.includes(d)) continue;
     if (folds[d.id] === false) d.open = false;
     d.addEventListener('toggle', () => { folds[d.id] = d.open; try { localStorage.setItem('localsh-folds', JSON.stringify(folds)); } catch (e) { /* ignore */ } });
   }
@@ -1299,7 +1352,8 @@ async function main() {
   requestAnimationFrame(loop);
   setInterval(tick, 150);                                 // rAF stops in hidden tabs; keep the solver advancing anyway
 }
-window.LocalSH = S; S.api = { selectLath, selectVertex, clearSelection, setTheme, setCentre, updateLaths, setTurntable, setProjection, setRefine, setSide, view, startAnneal, stopAnneal, extract, reseedNow, setLayer, updatePrediction, globalField, loadCarrierByName, onDensityChange,
-  setSeedMode: (m) => document.querySelector(`#seed-mode .chip[data-mode="${m}"]`).click(), setConeMode: (m) => { $('sel-cones').value = m; S.coneMode = m; if (S.seedMode === 'global') reseedNow(); },
+window.LocalSH = S; S.api = { selectLath, selectVertex, clearSelection, setTheme, setCentre, updateLaths, setTurntable, setProjection, setRefine, setSide, view, extract, reseedNow, setLayer, updatePrediction, globalField, loadCarrierByName, onDensityChange,
+  setSeedMode: (m) => document.querySelector(`#seed-mode .chip[data-mode="${m}"]`).click(), setConeMode: (m) => { $('sel-cones').value = m; S.coneMode = m; $('row-cone-flat').hidden = m === 'uniform'; if (S.seedMode === 'global') reseedNow(); },
+  setConeFlat: (on) => { $('ck-cone-flat').checked = !!on; $('ck-cone-flat').dispatchEvent(new Event('change')); },
   healNow, setStage, clearPins, findMotifs, pump, run: (target) => { S.target = Math.min(S.maxSteps, target); syncStepsUI(); } };   // for debugging and scripted runs from the console
 main();

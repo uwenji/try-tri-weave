@@ -775,10 +775,12 @@ export class Carrier {
    *  model and needs no curvature-induced dislocations. Open surface: φ = 0 on the rim (the rim absorbs the
    *  residual Σ Ω_c − ∫K). Closed surface: the residual is spread as uniform curvature (Gauss–Bonnet needs it to be
    *  0) and φ has zero mean. φ is then shifted so that its mean on the ring ρ ≈ a around `centre` is 0 (edge a there).
-   *  cones: [{vertex, valence}]. Returns {phi, residualDeg, min, max, iters}. Computed on the base carrier. */
-  sizeField(cones, a, centre, { x0 = null, tol = 1e-8, smear = 0 } = {}) {
-    if (this.base) { const r = this.base.sizeField(cones, a, centre, { x0, tol, smear }); return { ...r, phi: this.interp(r.phi) }; }
-    const { n, L, K, boundary, m } = this;
+   *  cones: [{vertex, valence}]. weights (per vertex, optional): the Laplacian's edges weighted by (w_i + w_j)/2 — larger
+   *  weights keep φ flatter there (cones.js · developableWeights). Returns {phi, residualDeg, min, max, iters}. Computed
+   *  on the base carrier. */
+  sizeField(cones, a, centre, { x0 = null, tol = 1e-8, smear = 0, weights = null } = {}) {
+    if (this.base) { const r = this.base.sizeField(cones, a, centre, { x0, tol, smear, weights }); return { ...r, phi: this.interp(r.phi) }; }
+    const { n, K, boundary, m } = this, { L, Ldiag } = weights ? this.weightedLaplacian(weights) : this;
     const rhs = new Float64Array(n);
     for (let i = 0; i < n; i++) rhs[i] = boundary[i] ? 0 : -K[i];
     const open = boundary.some(b => b);
@@ -796,11 +798,11 @@ export class Carrier {
       // Dirichlet φ = 0 on the rim: boundary rows are the identity, their unknowns stay 0 (rhs 0, zero start)
       const tmp = new Float64Array(n);
       const apply = (x, out) => { spmv(L, x, tmp); for (let i = 0; i < n; i++) out[i] = boundary[i] ? x[i] : tmp[i]; };
-      const diag = new Float64Array(n); for (let i = 0; i < n; i++) diag[i] = boundary[i] ? 1 : Math.max(this.Ldiag[i], 1e-12);
+      const diag = new Float64Array(n); for (let i = 0; i < n; i++) diag[i] = boundary[i] ? 1 : Math.max(Ldiag[i], 1e-12);
       const res = pcg(apply, diag, rhs, x0, { maxIter: 3000, tol }); phi = res.x; iters = res.iters;
     } else {
       for (let i = 0; i < n; i++) rhs[i] -= residual * m[i] / this.area;    // make Σ rhs = 0 (L is singular on a closed surface)
-      const diag = new Float64Array(n); for (let i = 0; i < n; i++) diag[i] = Math.max(this.Ldiag[i], 1e-12);
+      const diag = new Float64Array(n); for (let i = 0; i < n; i++) diag[i] = Math.max(Ldiag[i], 1e-12);
       const proj = (v) => { let s = 0; for (let i = 0; i < n; i++) s += v[i]; s /= n; for (let i = 0; i < n; i++) v[i] -= s; };
       const res = pcg((x, out) => spmv(L, x, out), diag, rhs, x0, { maxIter: 3000, tol, projectMean: proj }); phi = res.x; iters = res.iters;
       proj(phi);                                                             // zero mean, whatever the start
@@ -813,6 +815,16 @@ export class Carrier {
     }
     let lo = Infinity, hi = -Infinity; for (let i = 0; i < n; i++) { if (phi[i] < lo) lo = phi[i]; if (phi[i] > hi) hi = phi[i]; }
     return { phi, residualDeg: residual * 180 / Math.PI, open, min: lo, max: hi, iters, skipped };
+  }
+
+  /** the cotan Laplacian with edge weights (w_i + w_j)/2 from per-vertex weights w (cached for the last w): {L, Ldiag} */
+  weightedLaplacian(w) {
+    if (this._wLap && this._wLap.w === w) return this._wLap.v;
+    const { L, n } = this, data = new Float64Array(L.data.length), dg = new Float64Array(n);
+    for (let i = 0; i < n; i++) for (let k = L.indptr[i]; k < L.indptr[i + 1]; k++) { const j = L.indices[k]; if (j === i) continue; data[k] = L.data[k] * 0.5 * (w[i] + w[j]); dg[i] -= data[k]; }
+    for (let i = 0; i < n; i++) for (let k = L.indptr[i]; k < L.indptr[i + 1]; k++) if (L.indices[k] === i) data[k] = dg[i];
+    const v = { L: { n, indptr: L.indptr, indices: L.indices, data }, Ldiag: dg };
+    this._wLap = { w, v }; return v;
   }
 
   /** Operators of the conformally rescaled metric ĝ = e^{2φ} g: intrinsic lengths ℓ̂ = e^{(φi+φj)/2} ℓ (discrete

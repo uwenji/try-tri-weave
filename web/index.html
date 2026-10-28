@@ -23,7 +23,16 @@
     <span id="st-backend" class="st pill">…</span>
   </header>
 
-  <aside id="panel">
+  <!-- Setup: the numbered sections (an accordion, one open at a time) under the solver strip; folds to a rail that keeps
+       Run / Pause and Re-seed, docks left or right of the view, widens by its inner edge (as in WeaveSim) -->
+  <aside id="panel" aria-label="Setup">
+    <div class="side-head" id="setup-head">
+      <button id="setup-toggle" class="side-toggle" type="button" aria-expanded="true" title="show / hide the setup"><span class="chev"></span><span class="t">Setup</span></button>
+      <button id="setup-mini-run" class="mini-btn" type="button" title="Run" aria-label="Run"><svg viewBox="0 0 12 12" aria-hidden="true"><path class="ic-run" d="M3 1.8v8.4L10 6z"/><path class="ic-pause" d="M2.6 2h2.3v8H2.6zM7.1 2h2.3v8H7.1z"/></svg></button>
+      <button id="setup-mini-reseed" class="mini-btn line" type="button" title="Re-seed: start again from the seed" aria-label="Re-seed"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M9.7 6.6A3.8 3.8 0 1 1 8.6 3.4"/><path d="M9 1.3v2.5H6.5"/></svg></button>
+      <button id="setup-dock" class="nbtn" type="button" title="move the setup to the other side of the view">⇄</button>
+    </div>
+    <div id="setup-body" class="side-body">
     <!-- solver strip: always visible; the chart folds -->
     <div id="growth">
       <div id="growth-head">
@@ -50,7 +59,7 @@
     </div>
 
     <div id="sections">
-    <details class="sec" id="sec-surface" open>
+    <details class="sec" name="setup" id="sec-surface" open>
       <summary><span class="chev"></span><h2>1 File</h2><span class="sum" id="sum-surface"></span></summary>
       <div class="body">
       <div class="row">
@@ -93,7 +102,7 @@
       </div>
     </details>
 
-    <details class="sec" id="sec-density" open>
+    <details class="sec" name="setup" id="sec-density">
       <summary><span class="chev"></span><h2>2 Density</h2><span class="sum" id="sum-density"></span></summary>
       <div class="body">
       <div class="row slider">
@@ -119,7 +128,7 @@
       </div>
     </details>
 
-    <details class="sec" id="sec-sing" open>
+    <details class="sec" name="setup" id="sec-sing">
       <summary><span class="chev"></span><h2>3 Singularity</h2><span class="sum" id="sum-sing"></span></summary>
       <div class="body">
       <div class="row">
@@ -130,6 +139,14 @@
         <div class="row">
           <label for="sel-cones">size field ĝ <button class="info" type="button" title="cones from the curvature: the surface's curvature is put into a few cones (a 5 or a 7 wherever 60° of curvature have gathered on the lattice scale; a closed surface ends with 6χ net) and the field, the stripes and SH are solved in a metric that is flat between them — for cones, tori and genus-n shapes. uniform a: no size field, the lattice edge is a everywhere — keeps the lath spacing even on organic shapes. field's own 5/7s: the smoothest field's singular faces as cones.">i</button></label>
           <select id="sel-cones"><option value="greedy">cones from the curvature</option><option value="uniform">uniform a (no size field)</option></select>
+        </div>
+        <div class="row" id="row-cone-flat">
+          <label class="check"><input type="checkbox" id="ck-cone-flat" checked> flat on developable parts</label>
+          <button class="info" type="button" title="Keeps the size field ĝ flat where the carrier is developable at the lattice scale — tubes, flat caps, strips (|K| &lt; 5° per lattice cell, 1 a or more from the curvature): φ is solved with a Laplacian 30× stiffer there, so those laths keep the edge a and the size change stays on the curved strips, where the 5s and 7s sit. Without it φ is harmonic on those parts and takes its level from the curved ones: along a tube it does not decay, so tubes shrink or taper (treeBig ×2: tubes at 0.95 a, junctions to 1.5 a) and a crease ring swings 0.7–1.6 a between its cones (cylinder). No effect where nothing is developable at this a (Duck_bob).">i</button>
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="ck-mbo" checked> singularities on the curvature</label>
+          <button class="info" type="button" title="The smoothest field (Knöppel et al. 2013) is solved as an eigenvector, and the eigenvector may shrink the field's length |z| where it turns. That parks its singularities away from the curvature that should hold them: on the cylinder 1.3–1.8 a inside the flat caps, with 52 forced branch points at the creases — after SH some 5s stay trapped in the caps. With this on, 20 steps of 'normalise |z| to 1, then a short diffusion' (core 0.5 a) move them to the unit-length optimum, where the curvature screens them: on the cylinder all 12 on the creases, 0–4 branch points, and SH alone ends with the 12 fives there. Over the zoo: 218 → 95 branch points, 254 → 228 singular peaks after 2500 steps (tree 49 → 35, Bunny 45 → 39). About a second more.">i</button>
         </div>
         <div class="row">
           <button id="btn-rosy" class="btn">Solve rotation field + seed</button>
@@ -166,11 +183,11 @@
       </div>
     </details>
 
-    <details class="sec" id="sec-solve" open>
+    <details class="sec" name="setup" id="sec-solve">
       <summary><span class="chev"></span><h2>4 Solve</h2><span class="sum" id="sum-solve"></span></summary>
       <div class="body">
-      <div class="subhead">pattern parameters <button class="info" type="button" title="u_t = r u − (1 + Δ/q0²)² u + b u² − u³. r &lt; 0 keeps u = 0 stable, so the lattice only grows from the seed as a front; b (the quadratic term) makes hexagons (spots) win and lets them live at more negative r. The map shows the front speed measured on a flat domain with the solver's own scheme: drag the dot to set r and b.">i</button></div>
-      <canvas id="phase" class="pchart" width="372" height="190" title="drag the dot to set r and b (the diamond: anneal stage)"></canvas>
+      <div class="subhead">pattern parameters <button class="info" type="button" title="u_t = r u − (1 + Δ/q0²)² u + b u² − u³. r &lt; 0 keeps u = 0 stable, so the lattice grows only from the seed, as a front; b (the quadratic term) makes hexagons (spots) win and lets them live at more negative r. The map is measured on a flat domain with the solver's own scheme (edges by bisection, ±0.002 in r). Hatched: the seed dies (u = 0 wins). Grey: pinned — the patch survives but its front does not move: the lattice holds it, it would have to advance a whole row at once; the band is under 0.01 wide in r for b ≤ 1.1 and widens to 0.25 at b = 2. Blue: the front advances, in bands of lattice edges per 100 steps (key in the corner). Dots, r > 0: u = 0 is unstable, patterns nucleate everywhere, not only at the front. Read as a crystallisation diagram: seed dies = undersaturated; the pinned band = the solubility line, widened into a dead zone by pinning; front advances = metastable zone (grows only from a seed); r > 0 = labile zone (spontaneous nucleation, many grains). Drag the dot to set r and b; hover to read a point.">i</button></div>
+      <canvas id="phase" class="pchart" width="372" height="190" aria-label="map of r and b: where the seed dies, is pinned, or grows; drag the dot to set r and b"></canvas>
       <div class="row slider"><label for="sl-r">r</label><input type="range" id="sl-r" min="-0.5" max="0.1" step="0.005" value="-0.08"><output id="out-r" class="mono">-0.080</output></div>
       <div class="row slider"><label for="sl-b">b (quadratic)</label><input type="range" id="sl-b" min="0.5" max="2" step="0.01" value="1.2"><output id="out-b" class="mono">1.20</output></div>
       <div class="readout" id="ro-front">—</div>
@@ -181,21 +198,12 @@
         <span class="readout inline" id="ro-cg">—</span>
       </div>
       <div class="row">
-        <label class="check"><input type="checkbox" id="ck-anneal"> anneal after growth</label><button class="info stat" id="i-anneal" type="button" title="Two stages: grow at (r, b), then anneal at (r₂, b₂) near the edge of the map, where dislocations are mobile (flat test: 4–8× faster annihilation) and the front 3–4× slower; it removes isolated extra 5–7 pairs, not holonomy seams. Grey: off · green: armed · orange: annealing.">i</button>
-        <label for="nb-r2">r₂</label><input type="number" id="nb-r2" class="num sm" step="0.005" value="-0.027">
-        <label for="nb-b2">b₂</label><input type="number" id="nb-b2" class="num sm" step="0.01" value="0.69">
-      </div>
-      <div class="row">
-        <label for="sel-anneal-when">switch</label>
-        <select id="sel-anneal-when"><option value="auto">when the front stops (peaks constant over 3 read-outs)</option><option value="step">at step</option></select>
-        <input type="number" id="nb-anneal-step" class="num" step="100" min="100" value="5000" hidden>
-        <span class="readout inline" id="ro-anneal">off</span>
-      </div>
-      <div class="row">
-        <button id="btn-heal" class="btn" type="button">Heal 5-7-5</button>
+        <button id="btn-heal" class="btn" type="button">Heal pairs</button>
+        <label class="check"><input type="checkbox" id="ck-heal-glide" checked> glide free 5–7 pairs</label>
+        <label class="check"><input type="checkbox" id="ck-heal-climb"> move lone 5s / 7s to their curvature (experimental)</label>
         <label class="check"><input type="checkbox" id="ck-heal-pin" checked> pin what will not hold</label>
         <button id="btn-pins-clear" class="btn" type="button" hidden>Clear pins</button>
-        <button class="info stat" id="i-heal" type="button" data-src="ro-heal" title="Reads the lattice and takes apart the bound pairs one at a time, inside the solver. 5-7-5 with two regular sites between the 5s around the 7 = a pentagon missing its centre site: a peak is nucleated at the centre and the 7 pushed outward. 7-5-7 with one site between the 7s = a heptagon holding one site too many: the 5 and that site are merged. 5-7-5 with one site between the 5s, and 7-7-5 triangles = a quad with the wrong diagonal: the four sites are moved so the diagonal flips. Each kick is held for 60 steps, then the field runs 400 steps free; the lattice is read again and the kick is kept only if the defects around it went down (else the field is put back). pin: a kick that does not hold on its own is kept applied after every batch of steps — the single 5 stays, held like a seed; Clear pins releases them. 5-5-7 triangles and free 5–7 pairs are left to the anneal.">i</button>
+        <button class="info stat" id="i-heal" type="button" data-src="ro-heal" title="Reads the lattice and takes apart the bound pairs one at a time, inside the solver. 5-7-5 with two regular sites between the 5s around the 7 = a pentagon missing its centre site: a peak is nucleated at the centre and the 7 pushed outward. 7-5-7 with one site between the 7s = a heptagon holding one site too many: the 5 and that site are merged. 5-7-5 with one site between the 5s, 7-7-5 triangles and 5-7-7-5 = a quad with the wrong diagonal: the four sites are moved so the diagonal flips. 5-5-7 triangles: the two 5s are merged (the merged site and the 7 become 6s, the other common neighbour of the 5s becomes the 5). Each kick is held for 60 steps, then the field runs 400 steps free; the lattice is read again and the kick is kept only if the defects around it went down (else the field is put back). glide: a free 5–7 pair is a dislocation — no single flip removes it, a flip of the 7's edge to a far corner of the 5–7 edge moves it by one lattice vector. Pairs the curvature does not ask for (less than 30° under them) are carried flip by flip to the nearest other free pair (anti-pairs annihilate), else to the nearest lone 5 or 7 (a 5-5-7 / 5-7-5 / 7-5-7 forms and is taken apart), else to the rim. Every kick is kept only if the lattice around it is also no less regular (rms edge strain + rms angle deviation from 60°). move lone 5s / 7s: a lone 5 (7) with less than 20° of curvature of its sign under it is walked one site at a time (trough on its peak, bump one edge along) towards the nearest spot that holds 40° of it — a 5 belongs on the crease, tip or dome, a 7 in the saddle or neck; a step is kept when the curvature under it went up with no new defect and no loss of regularity. pin: a kick that does not hold on its own — or undoes itself within 500 more steps — is kept applied after every batch of steps, held like a seed; Clear pins releases them.">i</button>
       </div>
       </div>
     </details>
@@ -204,6 +212,7 @@
     <a class="sec-link" id="sec-explain" href="Tri-Weave-Lattice-Equations.html" target="_blank" rel="noopener" title="Tri-Weave Lattice Equations — opens in a new tab">
       <span class="chev" aria-hidden="true"></span><h2>5 Explain</h2><span class="sum">how the solver works ↗</span>
     </a>
+    </div>
     </div>
     <!-- read-outs shown in the hover cards of the status marks (moved into the card while it is open) -->
     <div id="tip-sources" hidden>
@@ -214,6 +223,7 @@
       <svg id="dens-svg" class="diagram" viewBox="0 0 372 156" role="img" aria-label="lattice edge, strand pitch and carrier resolution at true ratio"></svg>
       <div class="readout" id="ro-heal">—</div>
     </div>
+    <div id="setup-resize" class="resizer" role="separator" aria-orientation="vertical" aria-label="resize the setup" tabindex="0" title="drag to resize the setup (double-click: default width)"></div>
   </aside>
 
   <main id="viewport">
@@ -234,8 +244,8 @@
 
   <!-- display tools: a sidebar beside the view that folds to a narrow tab and docks left or right (as in WeaveSim) -->
   <aside id="display">
-    <div id="display-head">
-      <button id="display-toggle" type="button" aria-expanded="true" title="show / hide the display tools"><span class="chev"></span><span class="t">Display</span></button>
+    <div id="display-head" class="side-head">
+      <button id="display-toggle" class="side-toggle" type="button" aria-expanded="true" title="show / hide the display tools"><span class="chev"></span><span class="t">Display</span></button>
       <button id="display-dock" class="nbtn" type="button" title="move the sidebar to the other side of the view">⇄</button>
     </div>
     <div class="body">

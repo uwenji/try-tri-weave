@@ -165,6 +165,28 @@
   "a_default": 809.0207256785149
  },
  {
+  "name": "cylinder",
+  "file": "carriers/cylinder.lshc",
+  "n": 22321,
+  "nf": 44638,
+  "omega_deg": 719.9999999997945,
+  "chi": 2,
+  "bbox": 139.4718305666958,
+  "h": 1.1622656747255973,
+  "a_default": 10.728606228236284
+ },
+ {
+  "name": "open_cylinder",
+  "file": "carriers/open_cylinder.lshc",
+  "n": 20366,
+  "nf": 40602,
+  "omega_deg": 358.6786004684282,
+  "chi": 1,
+  "bbox": 139.4717391160198,
+  "h": 1.1622656747255973,
+  "a_default": 10.728606228236284
+ },
+ {
   "name": "Tube",
   "file": "carriers/Tube.lshc",
   "n": 18235,

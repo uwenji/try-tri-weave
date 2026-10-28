@@ -12,3 +12,13 @@ export const FRONT = {
   dt: [0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5],
   dtRel: [[0.9989, 0.9968, 0.9882, 0.9810, 0.9729, 0.9583, 0.9291], [0.9993, 0.9971, 0.9963, 0.9956, 0.9926, 0.9904, 0.9808]],
 };
+
+// The two edges of the map by bisection (localize/experiments/frontspeed/bisect.py: front.py, the same scheme, dt = 0.1,
+// ±0.002 in r): below r_die(b) the seeded patch dies out; above r_grow(b) its front advances (v > 0.01 q0-units); between
+// them it survives without growing — pinned by its own lattice (just above r_die it may retreat, too slowly to die
+// within T = 500). The band is < 0.01 wide in r for b ≤ 1.1 and widens to 0.25 at b = 2.
+export const BOUND = {
+  b: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0],
+  die: [-0.0213, -0.0288, -0.0429, -0.0562, -0.0779, -0.1013, -0.1288, -0.1612, -0.1988, -0.2438, -0.2938, -0.3488, -0.4112, -0.4763, -0.5481, -0.6256],
+  grow: [-0.0162, -0.025, -0.0388, -0.0513, -0.0696, -0.0938, -0.1188, -0.1462, -0.1763, -0.2062, -0.2362, -0.2662, -0.2962, -0.3263, -0.3512, -0.3763],
+};

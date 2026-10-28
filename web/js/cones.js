@@ -34,6 +34,24 @@ export function smearWeights(c, v, R, sign = 0) {
   return out;
 }
 
+/** "Flat on developable parts": per-vertex weights for the size field's Laplacian (Carrier.sizeField · weights) — 1 on
+ *  the curvature (|K| ≥ deg per lattice cell, the angle defects heat-smoothed over a/2), rising linearly to W at ≥ ramp·a
+ *  from it. Inside a zone of constant weight φ stays harmonic; across the rise the flux is continuous, so on the
+ *  developable side (tubes, flat caps, strips) the gradient of φ is W× smaller: those laths keep the edge a, and the size
+ *  change stays on the curved strips, where the 5s and 7s sit. Without it φ takes its level there from the curved parts
+ *  — along a tube it does not decay, so tubes shrink or taper (treeBig ×2: 0.95 a, junctions to 1.5 a). Cached per (a, opts). */
+export function developableWeights(c, a, { W = 30, deg = 5, ramp = 1 } = {}) {
+  const key = `${a.toPrecision(5)}|${W}|${deg}|${ramp}`;
+  if (c._devW && c._devW.key === key) return c._devW.v;
+  const rho = 0.5 * a, u = c.heatSolve(Float64Array.from(c.K, (k, i) => c.boundary[i] ? 0 : k), 0.5 * rho * rho), cell = Math.sqrt(3) / 2 * a * a;
+  const curved = []; for (let i = 0; i < c.n; i++) if (!c.boundary[i] && Math.abs(u[i] * cell) * 180 / Math.PI >= deg) curved.push(i);
+  const w = new Float64Array(c.n).fill(W);
+  if (curved.length) { const d = dijkstra(c.graph, curved).dist; for (let i = 0; i < c.n; i++) w[i] = 1 + (W - 1) * Math.min(1, d[i] / (ramp * a)); }
+  let dev = 0, tot = 0; for (let i = 0; i < c.n; i++) { tot += c.m[i]; if (w[i] >= W) dev += c.m[i]; }
+  w.developableArea = tot ? dev / tot : 0;                                   // share of the area at full weight (≥ ramp·a from the curvature)
+  c._devW = { key, v: w }; return w;
+}
+
 /** vertices that are not on the rim and at least `margin` (along the intrinsic edges) from it (all vertices if closed) */
 export function interiorVertices(c, margin) {
   const src = []; for (let i = 0; i < c.n; i++) if (c.boundary[i]) src.push(i);
@@ -122,12 +140,12 @@ function nearestOf(G, src, targets) {
  *   ends with the net charge its topology needs (#5 − #7 = 6χ). Cones are smeared over `smear`·a for φ (see smearWeights);
  *   phi is normalised so that the interior has the same area in ĝ as in the model (as many sites as a uniform lattice of edge a).
  */
-export function placeCones(c, a, { mode = 'greedy', fieldSingular = null, threshold = 0.5, maxCharge = 3, margin = 1, smear = 0.5, relax = 0, log = null } = {}) {
+export function placeCones(c, a, { mode = 'greedy', fieldSingular = null, threshold = 0.5, maxCharge = 3, margin = 1, smear = 0.5, relax = 0, log = null, flat = null } = {}) {
   const { cand, rim } = interiorVertices(c, margin * a);
   const closed = !rim, need = closed ? Math.round(c.omega / PI3) : null;        // closed: #5 − #7 must be 6χ = Ω/60°
   const m = c.m, n = c.n, history = [], R = smear * a;
   let cones = [];
-  const finish = () => ({ ...sizeFieldFor(c, cones, a, { smear: R, cand }), history, need, closed });
+  const finish = () => ({ ...sizeFieldFor(c, cones, a, { smear: R, cand, flat }), history, need, closed });   // flat: developableWeights options, or null
   if (mode === 'uniform') return { cones: [], phi: null, stats: null, edges: null, history, residualDeg: null, net: 0, need, closed };
   if (mode === 'field') { cones = fieldSingular ? fieldCones(c, fieldSingular) : []; return finish(); }
   // residual curvature per vertex (interior); a placed cone takes its angle out at its vertex
@@ -207,13 +225,14 @@ export function placeCones(c, a, { mode = 'greedy', fieldSingular = null, thresh
 /** the size field of a cone list (base carrier), normalised so that the ĝ area of the interior equals its model area
  *  (Σ m e^{2φ} = Σ m: as many sites as a uniform lattice of edge a, the edge then varies around a) → {cones, phi, stats,
  *  edges, residualDeg, net}. Cones may carry their own smear radius (`smear`, model units) and are smeared over `smear`·… */
-export function sizeFieldFor(c, cones, a, { smear = 0.5 * a, cand = null } = {}) {
+export function sizeFieldFor(c, cones, a, { smear = 0.5 * a, cand = null, flat = null } = {}) {
   const m = c.m; if (!cand) cand = interiorVertices(c, a).cand;
-  const res = c.sizeField(cones, a, -1, { tol: 1e-8, smear });
+  const weights = flat ? developableWeights(c, a, flat) : null;
+  const res = c.sizeField(cones, a, -1, { tol: 1e-8, smear, weights });
   const phi = res.phi; let s2 = 0, w = 0; for (const i of cand) { s2 += m[i] * Math.exp(2 * phi[i]); w += m[i]; }
   const shift = 0.5 * Math.log(s2 / (w || 1)); for (let i = 0; i < phi.length; i++) phi[i] -= shift;
   const st = phiStats(phi, cand, m); let v = 0; for (const i of cand) v += m[i] * (phi[i] - st.mean) ** 2;
-  return { cones, phi, stats: { ...st, std: Math.sqrt(v / (w || 1)) }, edges: edgeQuantiles(phi, cand), residualDeg: res.residualDeg, net: netCharge(cones) };
+  return { cones, phi, stats: { ...st, std: Math.sqrt(v / (w || 1)) }, edges: edgeQuantiles(phi, cand), residualDeg: res.residualDeg, net: netCharge(cones), flat: weights ? { ...flat, developableArea: weights.developableArea } : null };
 }
 
 /** user edits applied to an automatic cone list: edits = [{vertex, on, valence, radius (a), angle (deg), weight}] keyed by the

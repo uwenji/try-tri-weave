@@ -83,7 +83,7 @@ function cotanFromLengths(Fi, Len, n) {
  * Returns {N, frames, re, im, theta (angle of one branch in the vertex frame), mag (|z|/max), idx (Int8 per face),
  *          singular: [{face, index, valence}], sumIndex, energy, iters}
  */
-export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, cgMax = 300, log = null, constraints = null, x0 = null } = {}) {
+export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, cgMax = 300, log = null, constraints = null, x0 = null, mbo = null } = {}) {
   const { Fi, n, boundary } = c, L = Len || c.Li, reversed = fiReversed(c);
   const frames = intrinsicFrames(Fi, L, n, boundary, reversed);
   const { wmap, m } = cotanFromLengths(Fi, L, n);
@@ -142,6 +142,23 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
     if (it > 2 && Math.sqrt(ch) < 1e-5) break;
   }
   }
+  // Unit-length relaxation (diffusion-generated motion, after Merriman–Bence–Osher). The eigenvector is the relaxed
+  // problem: |z| may shrink where the field turns, and that parks the singular cores away from the curvature that should
+  // hold them (cylinder: 1.3–1.8 a inside the flat caps, 52 forced branch points at the creases). Alternating "normalise to
+  // |z| = 1" with a short implicit diffusion (M + τ A) z' = M z moves the cores to the unit-length optimum, where the
+  // curvature screens them (cylinder: all 12 on the creases, 0–4 branch points). mbo = {tau: core radius² (model units), iters}
+  let mboInfo = null;
+  if (mbo && mbo.iters > 0 && !cons.length) {
+    const tau = mbo.tau, rhsB = new Float64Array(2 * n), jacB = new Float64Array(2 * n), tmpB = new Float64Array(2 * n);
+    for (let i = 0; i < n; i++) jacB[i] = jacB[n + i] = m[i] + tau * (diag[i] + eps * m[i]);
+    const applyB = (x, out) => { applyA(x, tmpB); for (let i = 0; i < n; i++) { out[i] = m[i] * x[i] + tau * tmpB[i]; out[n + i] = m[i] * x[n + i] + tau * tmpB[n + i]; } };
+    for (let it = 0; it < mbo.iters; it++) {
+      for (let i = 0; i < n; i++) { const r = Math.hypot(z[i], z[n + i]) || 1; rhsB[i] = m[i] * z[i] / r; rhsB[n + i] = m[i] * z[n + i] / r; }
+      const res = pcg(applyB, jacB, rhsB, z, { maxIter: cgMax, tol: cgTol }); iters += res.iters; z = res.x;
+    }
+    normalise(z); mboInfo = { tau, iters: mbo.iters };
+    if (log) log(`rosy: ${mbo.iters} unit-length (MBO) steps, core ${Math.sqrt(tau).toPrecision(3)}`);
+  }
   const re = z.subarray(0, n), im = z.subarray(n, 2 * n);
   const theta = new Float64Array(n), mag = new Float64Array(n); let mx = 0;
   for (let i = 0; i < n; i++) { theta[i] = Math.atan2(im[i], re[i]) / N; mag[i] = Math.hypot(re[i], im[i]); if (mag[i] > mx) mx = mag[i]; }
@@ -159,7 +176,7 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
     if (mI !== 0) singular.push({ face: f, index: mI, valence: 6 - mI });
   }
   let sumIndex = 0; for (const sg of singular) sumIndex += sg.index;
-  return { N, frames, re, im, theta, mag, idx, singular, sumIndex, energy: lam, iters, m, reversed, z, constrained: cons.length };
+  return { N, frames, re, im, theta, mag, idx, singular, sumIndex, energy: lam, iters, m, reversed, z, constrained: cons.length, mbo: mboInfo };
 }
 
 /** 3-D unit directions of branch k at every vertex for display, from the angle field and each vertex's first ring
