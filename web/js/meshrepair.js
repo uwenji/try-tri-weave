@@ -105,8 +105,12 @@ export function edgeMates(F, n, strict = true) {
   return { O, same, nonManifold, boundary };
 }
 
-/** consistent orientation over manifold edges (BFS per connected part); conflicts (Möbius-like) are left as cuts */
-export function orientFaces(F, n) {
+/** consistent orientation over manifold edges (BFS per connected part); conflicts (Möbius-like) are left as cuts.
+ *  With V, a non-orientable mesh gets a short cut: the BFS leaves the conflicts where its fronts met (a zigzag through
+ *  a row of faces, a staircase), and single faces are then turned over while that shortens the cut (each turn moves the
+ *  cut across the face; it settles as a locally shortest edge path). Returns {F, flipped, conflicts, cut: [a, b, …]
+ *  the cut edges, cutLength0 / cutLength before / after the shortening}. */
+export function orientFaces(F, n, V = null) {
   const m = F.length / 3, { O, same } = edgeMates(F, n, false);
   const flip = new Uint8Array(m), seen = new Uint8Array(m), stack = new Int32Array(m); let conflicts = 0, flipped = 0;
   for (let r = 0; r < m; r++) {
@@ -121,10 +125,146 @@ export function orientFaces(F, n) {
       }
     }
   }
+  const bad = (c) => { const o = O[c]; return o >= 0 && (flip[(c / 3) | 0] ^ same[c]) !== flip[(o / 3) | 0]; };
+  const len = (c) => { const a = 3 * F[nxt(c)], b = 3 * F[prv(c)]; return Math.hypot(V[a] - V[b], V[a + 1] - V[b + 1], V[a + 2] - V[b + 2]); };
+  let cutLength0 = 0, cutLength = 0;
+  if (conflicts && V) {
+    for (let c = 0; c < 3 * m; c++) if (O[c] > c && bad(c)) cutLength0 += len(c);
+    const inQ = new Uint8Array(m), queue = [];
+    for (let c = 0; c < 3 * m; c++) if (O[c] >= 0 && bad(c)) { const f = (c / 3) | 0; if (!inQ[f]) { inQ[f] = 1; queue.push(f); } }
+    const tol = 1e-9 * (cutLength0 || 1); let guard = 0;
+    while (queue.length && guard++ < 200 * m) {
+      const f = queue.pop(); inQ[f] = 0; let gain = 0;
+      for (let s = 0; s < 3; s++) { const c = 3 * f + s; if (O[c] >= 0) gain += bad(c) ? -len(c) : len(c); }
+      if (gain >= -tol) continue;
+      flip[f] ^= 1;
+      for (let s = 0; s < 3; s++) { const o = O[3 * f + s]; if (o < 0) continue; const g = (o / 3) | 0; if (!inQ[g]) { inQ[g] = 1; queue.push(g); } }
+    }
+  }
+  const cut = [];
+  for (let c = 0; c < 3 * m; c++) if (O[c] > c && bad(c)) { cut.push(F[nxt(c)], F[prv(c)]); if (V) cutLength += len(c); }
   // the global sign (outward / convex side) is applied to the final carrier by carrier.js orientSide
   const G = Int32Array.from(F);
   for (let f = 0; f < m; f++) if (flip[f]) { const t = G[3 * f + 1]; G[3 * f + 1] = G[3 * f + 2]; G[3 * f + 2] = t; flipped++; }
-  return { F: G, flipped, conflicts: conflicts >> 1 };
+  return { F: G, flipped, conflicts: V ? cut.length / 2 : conflicts >> 1, cut, cutLength0, cutLength };
+}
+
+/** The cut edges of orientFaces as polylines: [{P: Float64Array (positions along the path), closed}], or null when the
+ *  cut branches (a vertex on three or more cut edges) — then it is not re-glued. */
+export function cutPaths(V, cut) {
+  const adj = new Map();
+  for (let k = 0; k < cut.length; k += 2) for (const [x, y] of [[cut[k], cut[k + 1]], [cut[k + 1], cut[k]]]) { let l = adj.get(x); if (!l) adj.set(x, l = []); l.push(y); }
+  for (const l of adj.values()) if (l.length > 2) return null;
+  const used = new Set(), out = [], key = (a, b) => (a < b ? a + ',' + b : b + ',' + a);
+  const walk = (v0) => {
+    const pts = [v0]; let prev = -1, cur = v0;
+    for (;;) { const nx = adj.get(cur).find(w => w !== prev && !used.has(key(cur, w))); if (nx === undefined) break; used.add(key(cur, nx)); pts.push(nx); prev = cur; cur = nx; if (nx === v0) break; }
+    return pts;
+  };
+  for (const [v, l] of adj) if (l.length === 1 && !used.has(key(v, l[0]))) out.push({ ids: walk(v), closed: false });
+  for (const [v, l] of adj) if (l.some(w => !used.has(key(v, w)))) out.push({ ids: walk(v), closed: true });
+  return out.map(p => ({ closed: p.closed, P: Float64Array.from(p.ids.flatMap(i => [V[3 * i], V[3 * i + 1], V[3 * i + 2]])) }));
+}
+
+/**
+ * Re-glue the orientation cut of a non-orientable surface after the remesh (orientFaces cut it so that the corner
+ * table and the remesher see an orientable disc; the remesher samples the two sides of the cut independently).
+ * paths: cutPaths (open paths only); V, F: the remeshed mesh (consistently oriented, the cut two boundary runs per path);
+ * h: the target edge. The boundary vertices on a path (they were projected onto it) get its arc length s; the two runs
+ * are merged into one sampling — samples of the two sides closer than h/2 (mutual nearest) become one vertex at their
+ * mean s, every other sample is inserted into the other side's boundary edge (a fan in that edge's face) — and the
+ * two sides are welded. Returns {V, F, seam: vertices on the glued seam, moved: per vertex 1 if on the seam} or
+ * {error} (then the caller keeps the cut).
+ */
+export function zipCut(V, F, paths, h) {
+  const n = V.length / 3, m = F.length / 3, { O } = edgeMates(F, n, true);
+  const nextB = new Int32Array(n).fill(-1), isB = new Uint8Array(n), faceOf = new Map();
+  for (let c = 0; c < 3 * m; c++) if (O[c] < 0) { const a = F[nxt(c)], b = F[prv(c)]; nextB[a] = b; isB[a] = isB[b] = 1; faceOf.set(a * 4294967296 + b, (c / 3) | 0); }
+  // closest point of every boundary vertex on every path: (path, s, d)
+  const segs = paths.map(p => { const k = p.P.length / 3 - 1, S = new Float64Array(k + 1); for (let i = 0; i < k; i++) S[i + 1] = S[i] + Math.hypot(p.P[3 * i + 3] - p.P[3 * i], p.P[3 * i + 4] - p.P[3 * i + 1], p.P[3 * i + 5] - p.P[3 * i + 2]); return { k, S, P: p.P }; });
+  const onPath = new Int32Array(n).fill(-1), sOf = new Float64Array(n), tol = 1e-6 * h;
+  for (let v = 0; v < n; v++) {
+    if (!isB[v]) continue;
+    const x = V[3 * v], y = V[3 * v + 1], z = V[3 * v + 2]; let bd = Infinity, bp = -1, bs = 0;
+    segs.forEach((sg, pi) => {
+      for (let i = 0; i < sg.k; i++) {
+        const P = sg.P, ax = P[3 * i], ay = P[3 * i + 1], az = P[3 * i + 2], dx = P[3 * i + 3] - ax, dy = P[3 * i + 4] - ay, dz = P[3 * i + 5] - az, L2 = dx * dx + dy * dy + dz * dz;
+        let t = L2 > 0 ? ((x - ax) * dx + (y - ay) * dy + (z - az) * dz) / L2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const d = Math.hypot(ax + t * dx - x, ay + t * dy - y, az + t * dz - z);
+        if (d < bd) { bd = d; bp = pi; bs = sg.S[i] + t * (sg.S[i + 1] - sg.S[i]); }
+      }
+    });
+    if (bd < tol) { onPath[v] = bp; sOf[v] = bs; }
+  }
+  // runs of consecutive on-path boundary vertices, per boundary loop
+  const runs = [], seenL = new Uint8Array(n);
+  for (let v0 = 0; v0 < n; v0++) {
+    if (!isB[v0] || seenL[v0]) continue;
+    const loop = []; let v = v0, guard = 0; while (!seenL[v] && guard++ < n) { seenL[v] = 1; loop.push(v); v = nextB[v]; if (v < 0) break; }
+    const L = loop.length, st = loop.findIndex(u => onPath[u] < 0);
+    if (st < 0) return { error: 'a boundary loop lies entirely on the cut (a closed cut is not re-glued)' };
+    let cur = null;
+    for (let i = 1; i <= L; i++) {
+      const u = loop[(st + i) % L];
+      if (onPath[u] < 0) { cur = null; continue; }
+      if (!cur || onPath[u] !== cur.path) { cur = { path: onPath[u], v: [] }; runs.push(cur); }
+      cur.v.push(u);
+    }
+  }
+  const remap = new Int32Array(n); for (let i = 0; i < n; i++) remap[i] = i;
+  const Vout = Float64Array.from(V), addF = [], dropF = new Uint8Array(m), seamV = new Uint8Array(n);
+  for (let pi = 0; pi < paths.length; pi++) {
+    const sg = segs[pi], Stot = sg.S[sg.k], mine = runs.filter(r => r.path === pi && r.v.length >= 2);
+    if (mine.length !== 2) return { error: `cut path ${pi}: ${mine.length} boundary runs (2 expected)` };
+    const [RA, RB] = mine.map(r => { const s = r.v.map(u => sOf[u]), inc = s[s.length - 1] >= s[0]; return { v: r.v, s, inc }; });
+    for (const R of [RA, RB]) {
+      const lo = Math.min(R.s[0], R.s[R.s.length - 1]), hi = Math.max(R.s[0], R.s[R.s.length - 1]);
+      if (lo > 1e-6 * Stot + tol || hi < Stot - 1e-6 * Stot - tol) return { error: `cut path ${pi}: a side does not span the cut` };
+      for (let i = 1; i < R.s.length; i++) if ((R.s[i] - R.s[i - 1]) * (R.inc ? 1 : -1) < -tol) return { error: `cut path ${pi}: a side is not monotone along the cut` };
+    }
+    const sortedOf = (R) => R.v.map((u, i) => ({ u, s: R.s[i] })).sort((p, q) => p.s - q.s);
+    const A = sortedOf(RA), B = sortedOf(RB);
+    // mutual nearest pairs closer than h/2 → one vertex
+    const nearest = (X, Y) => { const out = new Int32Array(X.length); let j = 0; for (let i = 0; i < X.length; i++) { while (j + 1 < Y.length && Math.abs(Y[j + 1].s - X[i].s) <= Math.abs(Y[j].s - X[i].s)) j++; out[i] = j; } return out; };
+    const nAB = nearest(A, B), nBA = nearest(B, A), pairA = new Int32Array(A.length).fill(-1), pairB = new Int32Array(B.length).fill(-1);
+    for (let i = 0; i < A.length; i++) { const j = nAB[i]; if (nBA[j] === i && Math.abs(A[i].s - B[j].s) < 0.5 * h) { pairA[i] = j; pairB[j] = i; } }
+    if (pairA[0] < 0 || pairA[A.length - 1] < 0) return { error: `cut path ${pi}: the ends of the two sides do not meet` };
+    const at = (s) => { let i = 0; while (i < sg.k - 1 && sg.S[i + 1] < s) i++; const t = (s - sg.S[i]) / Math.max(sg.S[i + 1] - sg.S[i], 1e-300), P = sg.P; return [0, 1, 2].map(d => P[3 * i + d] + t * (P[3 * i + 3 + d] - P[3 * i + d])); };
+    for (let i = 0; i < A.length; i++) if (pairA[i] >= 0) {
+      const a = A[i].u, b = B[pairA[i]].u, s = 0.5 * (A[i].s + B[pairA[i]].s), p = at(s);
+      remap[b] = a; Vout.set(p, 3 * a); A[i].s = B[pairA[i]].s = s; seamV[a] = 1;
+    } else seamV[A[i].u] = 1;
+    for (let j = 0; j < B.length; j++) if (pairB[j] < 0) seamV[B[j].u] = 1;
+    // every unpaired sample into the other side's boundary edge: a fan in that edge's face
+    const insert = (X, Y) => {                                              // samples of X without a partner → edges of Y
+      for (let j = 0; j + 1 < Y.length; j++) {
+        const lo = Y[j].s, hi = Y[j + 1].s, ins = X.filter((x, i) => (X === A ? pairA[i] : pairB[i]) < 0 && x.s > lo && x.s < hi);
+        if (!ins.length) continue;
+        const p = Y[j].u, q = Y[j + 1].u, k1 = p * 4294967296 + q, k2 = q * 4294967296 + p;
+        const f = faceOf.has(k1) ? faceOf.get(k1) : faceOf.has(k2) ? faceOf.get(k2) : -1;
+        if (f < 0) return `no boundary face between two consecutive samples`;
+        const a = faceOf.has(k1) ? p : q, b = a === p ? q : p;             // the face runs a → b along the edge
+        const r = [F[3 * f], F[3 * f + 1], F[3 * f + 2]].find(w => w !== a && w !== b);
+        const seq = ins.map(x => x.u); if (a !== p) seq.reverse();         // from a to b
+        const chain = [a, ...seq, b];
+        for (let t = 0; t + 1 < chain.length; t++) addF.push(chain[t], chain[t + 1], r);
+        dropF[f] = 1;
+      }
+      return null;
+    };
+    const e1 = insert(A, B) || insert(B, A); if (e1) return { error: e1 };
+  }
+  // assemble: the kept faces and the fans, welded; compact the vertices
+  const G = []; for (let f = 0; f < m; f++) if (!dropF[f]) G.push(F[3 * f], F[3 * f + 1], F[3 * f + 2]);
+  G.push(...addF);
+  const used = new Uint8Array(n); for (let k = 0; k < G.length; k++) { G[k] = remap[G[k]]; used[G[k]] = 1; }
+  const idx = new Int32Array(n).fill(-1); let nv = 0; for (let i = 0; i < n; i++) if (used[i]) idx[i] = nv++;
+  const V2 = new Float64Array(3 * nv), seam = new Uint8Array(nv); for (let i = 0; i < n; i++) if (idx[i] >= 0) { V2.set(Vout.subarray(3 * i, 3 * i + 3), 3 * idx[i]); seam[idx[i]] = seamV[i]; }
+  const F2 = new Int32Array(G.length); let bad = 0;
+  for (let f = 0; f < G.length / 3; f++) { for (let k = 0; k < 3; k++) F2[3 * f + k] = idx[G[3 * f + k]]; if (F2[3 * f] === F2[3 * f + 1] || F2[3 * f + 1] === F2[3 * f + 2] || F2[3 * f] === F2[3 * f + 2]) bad++; }
+  if (bad) return { error: `${bad} degenerate faces after the weld` };
+  let nSeam = 0; for (const x of seam) nSeam += x;
+  return { V: V2, F: F2, seam, nSeam, idx };
 }
 
 /** strict corner table; vertices whose corners form more than one fan (non-manifold vertices, also those left by

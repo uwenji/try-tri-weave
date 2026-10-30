@@ -36,10 +36,12 @@ function meshData(Fi, Len, n) {
 export function stripeCoupling(frames, theta, N, q0, lenOf, key) {
   const step = TWO_PI / N;
   const angIn = (v, w) => { const f = frames[v], i = f.nb.indexOf(w); return i < 0 ? NaN : f.ang[i]; };
+  const sgIn = (v, w) => { const f = frames[v]; if (!f.sg) return 1; const i = f.nb.indexOf(w); return i < 0 ? 1 : f.sg[i]; };
   const nu = (v, k) => theta[v] + k * step + Math.PI / 2;
   return (p, q, k) => {
     const ap = angIn(p, q), aq = angIn(q, p); if (!Number.isFinite(ap) || !Number.isFinite(aq)) return null;
-    const r = aq + Math.PI - ap, target = nu(p, k) + r;
+    // across the seam of a non-orientable carrier the transport is a reflection: ν ↦ aq + π − (ν − ap)
+    const r = aq + Math.PI - ap, target = sgIn(p, q) > 0 ? nu(p, k) + r : aq + Math.PI - (nu(p, k) - ap);
     let best = null;
     for (let kp = 0; kp < 3; kp++) for (const s of [1, -1]) {
       const d = Math.abs(wrapPi(nu(q, kp) + (s < 0 ? Math.PI : 0) - target));

@@ -4,6 +4,7 @@
 // quick path without a remesher; the page now imports through import_worker.js.)
 import { csrFromCOO, spmv, csrDiagonal, pcg, dijkstra } from './sparse.js';
 import { conformalLengths, smearWeights } from './cones.js';
+import { buildRings } from './rosy.js';
 
 export const SQ3 = Math.sqrt(3);
 
@@ -217,32 +218,48 @@ export function flipToDelaunay(V, F) {
     const a = Fi[3 * f + s], b = Fi[3 * f + (s + 1) % 3];
     L[3 * f + s] = Math.hypot(V[3 * a] - V[3 * b], V[3 * a + 1] - V[3 * b + 1], V[3 * a + 2] - V[3 * b + 2]);
   }
-  const dir = new Map();
-  for (let f = 0; f < nf; f++) for (let s = 0; s < 3; s++) dir.set(Fi[3 * f + s] * 4294967296 + Fi[3 * f + (s + 1) % 3], f * 3 + s);
+  const dir = new Map(), same = new Uint8Array(3 * nf), dup = [];
+  for (let f = 0; f < nf; f++) for (let s = 0; s < 3; s++) {
+    const k = Fi[3 * f + s] * 4294967296 + Fi[3 * f + (s + 1) % 3], p = dir.get(k);
+    if (p !== undefined) dup.push(p, f * 3 + s);                            // two faces run the same way along this edge
+    dir.set(k, f * 3 + s);
+  }
   for (let f = 0; f < nf; f++) for (let s = 0; s < 3; s++) {
     const m = dir.get(Fi[3 * f + (s + 1) % 3] * 4294967296 + Fi[3 * f + s]);
     if (m !== undefined) { G[2 * (3 * f + s)] = Math.floor(m / 3); G[2 * (3 * f + s) + 1] = m % 3; }
+  }
+  // the seam of a non-orientable carrier (a Möbius band): the two faces of an edge run the same way along it, there is
+  // no reversed twin; link them as a same-direction pair (same = 1) so that the seam edges are flipped too
+  for (let k = 0; k < dup.length; k += 2) {
+    const p = dup[k], q = dup[k + 1];
+    if (G[2 * p] >= 0 || G[2 * q] >= 0) continue;                            // a non-manifold edge: leave it
+    G[2 * p] = Math.floor(q / 3); G[2 * p + 1] = q % 3; G[2 * q] = Math.floor(p / 3); G[2 * q + 1] = p % 3; same[p] = same[q] = 1;
   }
   const deg = new Int32Array(n); for (let k = 0; k < Fi.length; k++) deg[Fi[k]]++;
   const isDelaunay = (f, s) => { const g = G[2 * (3 * f + s)], t = G[2 * (3 * f + s) + 1]; return g < 0 || oppAngle(L, f, s) + oppAngle(L, g, t) <= Math.PI + 1e-6; };
   const flip = (f, s) => {
     const g = G[2 * (3 * f + s)], t = G[2 * (3 * f + s) + 1];
     if (g < 0 || g === f) return false;
-    const s1 = (s + 1) % 3, s2 = (s + 2) % 3, t1 = (t + 1) % 3, t2 = (t + 2) % 3;
+    const s1 = (s + 1) % 3, s2 = (s + 2) % 3, t1 = (t + 1) % 3, t2 = (t + 2) % 3, sm = same[3 * f + s];
+    // g = (v1, v0, v3) — or (v0, v1, v3) across a seam edge (sm), where its sides v0–v3 and v3–v1 swap places
+    const ta = sm ? t2 : t1, tb = sm ? t1 : t2;
     const v0 = Fi[3 * f + s], v1 = Fi[3 * f + s1], v2 = Fi[3 * f + s2], v3 = Fi[3 * g + t2];
     if (v2 === v3 || v0 === v1 || deg[v0] <= 3 || deg[v1] <= 3) return false;
-    const d = L[3 * f + s], l12 = L[3 * f + s1], l20 = L[3 * f + s2], l03 = L[3 * g + t1], l31 = L[3 * g + t2];
+    const d = L[3 * f + s], l12 = L[3 * f + s1], l20 = L[3 * f + s2], l03 = L[3 * g + ta], l31 = L[3 * g + tb];
     const x2 = (l20 * l20 - l12 * l12 + d * d) / (2 * d), y2 = Math.sqrt(Math.max(l20 * l20 - x2 * x2, 0));
     const x3 = (l03 * l03 - l31 * l31 + d * d) / (2 * d), y3 = -Math.sqrt(Math.max(l03 * l03 - x3 * x3, 0));
     const lnew = Math.hypot(x2 - x3, y2 - y3);
     if (lnew <= 1e-12) return false;
     const nf1 = [G[2 * (3 * f + s1)], G[2 * (3 * f + s1) + 1]], nf2 = [G[2 * (3 * f + s2)], G[2 * (3 * f + s2) + 1]];
-    const ng1 = [G[2 * (3 * g + t1)], G[2 * (3 * g + t1) + 1]], ng2 = [G[2 * (3 * g + t2)], G[2 * (3 * g + t2) + 1]];
+    const ng1 = [G[2 * (3 * g + ta)], G[2 * (3 * g + ta) + 1]], ng2 = [G[2 * (3 * g + tb)], G[2 * (3 * g + tb) + 1]];
+    const sf1 = same[3 * f + s1], sf2 = same[3 * f + s2], sg1 = same[3 * g + ta] ^ sm, sg2 = same[3 * g + tb] ^ sm;   // g's sides now in f's winding
     Fi[3 * f] = v2; Fi[3 * f + 1] = v0; Fi[3 * f + 2] = v3; L[3 * f] = l20; L[3 * f + 1] = l03; L[3 * f + 2] = lnew;
     Fi[3 * g] = v3; Fi[3 * g + 1] = v1; Fi[3 * g + 2] = v2; L[3 * g] = l31; L[3 * g + 1] = l12; L[3 * g + 2] = lnew;
     const setG = (f_, s_, p) => { G[2 * (3 * f_ + s_)] = p[0]; G[2 * (3 * f_ + s_) + 1] = p[1]; };
     setG(f, 0, nf2); setG(f, 1, ng1); setG(f, 2, [g, 2]); setG(g, 0, ng2); setG(g, 1, nf1); setG(g, 2, [f, 2]);
     for (const [nb, nw] of [[nf2, [f, 0]], [ng1, [f, 1]], [ng2, [g, 0]], [nf1, [g, 1]]]) if (nb[0] >= 0) setG(nb[0], nb[1], nw);
+    same[3 * f] = sf2; same[3 * f + 1] = sg1; same[3 * f + 2] = 0; same[3 * g] = sg2; same[3 * g + 1] = sf1; same[3 * g + 2] = 0;
+    for (const [nb, sv] of [[nf2, sf2], [ng1, sg1], [ng2, sg2], [nf1, sf1]]) if (nb[0] >= 0) same[3 * nb[0] + nb[1]] = sv;
     deg[v0]--; deg[v1]--; deg[v2]++; deg[v3]++;
     return true;
   };
@@ -289,17 +306,72 @@ export function angleDefects(V, F, n) {
   return { K, boundary };
 }
 
-export function vertexNormals(V, F, n) {
-  const N = new Float64Array(3 * n), nf = F.length / 3;
-  for (let f = 0; f < nf; f++) {
+/** area-weighted vertex normals. seam (per-vertex flags, optional): vertices on the seam of a non-orientable carrier,
+ *  where the faces come with both windings: their face normals are first turned to agree with the largest face, and the
+ *  sum points to the side most of the area is wound toward. */
+export function vertexNormals(V, F, n, seam = null) {
+  const N = new Float64Array(3 * n), nf = F.length / 3, fn = (f) => {
     const a = F[3 * f], b = F[3 * f + 1], c = F[3 * f + 2];
     const ux = V[3 * b] - V[3 * a], uy = V[3 * b + 1] - V[3 * a + 1], uz = V[3 * b + 2] - V[3 * a + 2];
     const wx = V[3 * c] - V[3 * a], wy = V[3 * c + 1] - V[3 * a + 1], wz = V[3 * c + 2] - V[3 * a + 2];
-    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    return [uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx];
+  };
+  for (let f = 0; f < nf; f++) {
+    const a = F[3 * f], b = F[3 * f + 1], c = F[3 * f + 2], [nx, ny, nz] = fn(f);
     for (const i of [a, b, c]) { N[3 * i] += nx; N[3 * i + 1] += ny; N[3 * i + 2] += nz; }
+  }
+  if (seam) {
+    const fs = new Map();
+    for (let f = 0; f < nf; f++) for (let k = 0; k < 3; k++) { const v = F[3 * f + k]; if (seam[v]) { let l = fs.get(v); if (!l) fs.set(v, l = []); l.push(fn(f)); } }
+    for (const [v, list] of fs) {
+      let ref = list[0], rl = 0; for (const q of list) { const l = Math.hypot(...q); if (l > rl) { rl = l; ref = q; } }
+      const s = [0, 0, 0]; let agree = 0;
+      for (const q of list) { const sg = q[0] * ref[0] + q[1] * ref[1] + q[2] * ref[2] < 0 ? -1 : 1; for (let d = 0; d < 3; d++) s[d] += sg * q[d]; agree += sg * Math.hypot(...q); }
+      const sg = agree < 0 ? -1 : 1; for (let d = 0; d < 3; d++) N[3 * v + d] = sg * s[d];
+    }
   }
   for (let i = 0; i < n; i++) { const l = Math.hypot(N[3 * i], N[3 * i + 1], N[3 * i + 2]) || 1; N[3 * i] /= l; N[3 * i + 1] /= l; N[3 * i + 2] /= l; }
   return N;
+}
+
+// ------------------------------------------------------------------ non-orientable carriers (a Möbius band)
+/** The seam of a non-orientable mesh: the edges whose two faces run the same way along them (no consistent winding
+ *  exists, so the import leaves the faces wound consistently except across one cut). Returns {count, pairs (a, b per
+ *  edge), vflag (per vertex: on the seam)}; count = 0 for an orientable carrier. */
+export function seamEdges(F, n) {
+  const nf = F.length / 3, dir = new Map(), pairs = [], vflag = new Uint8Array(n);
+  for (let f = 0; f < nf; f++) for (let s = 0; s < 3; s++) {
+    const a = F[3 * f + s], b = F[3 * f + (s + 1) % 3], k = a * 4294967296 + b;
+    if (dir.has(k)) { pairs.push(a, b); vflag[a] = vflag[b] = 1; } else dir.set(k, f);
+  }
+  return { count: pairs.length / 2, pairs, vflag };
+}
+
+/** The carrier cut open along its seam, for display: every seam vertex gets one copy per wedge of faces between seam
+ *  edges, so that each copy's faces are wound alike and shade smoothly. Returns {F (same face order), map (copy →
+ *  carrier vertex; the first n are the carrier's own vertices)}. */
+export function cutAlongSeam(F, n, seam) {
+  const nf = F.length / 3, G = Uint32Array.from(F), key = (a, b) => (a < b ? a * 4294967296 + b : b * 4294967296 + a);
+  const cut = new Set(); for (let k = 0; k < seam.pairs.length; k += 2) cut.add(key(seam.pairs[k], seam.pairs[k + 1]));
+  const cors = new Map();
+  for (let c = 0; c < 3 * nf; c++) { const v = F[c]; if (!seam.vflag[v]) continue; let l = cors.get(v); if (!l) cors.set(v, l = []); l.push(c); }
+  const extra = [];
+  for (const [v, list] of cors) {
+    const m = list.length, par = Array.from({ length: m }, (_, i) => i), find = (i) => { while (par[i] !== i) i = par[i] = par[par[i]]; return i; };
+    const others = list.map(c => { const f = c - c % 3; return [F[f], F[f + 1], F[f + 2]].filter(w => w !== v); });
+    for (let i = 0; i < m; i++) for (let j = i + 1; j < m; j++) for (const w of others[i]) {
+      if (!others[j].includes(w) || cut.has(key(v, w))) continue;
+      let cnt = 0; for (const o of others) if (o.includes(w)) cnt++;
+      if (cnt === 2) par[find(i)] = find(j);
+    }
+    const id = new Map(); let first = true;
+    for (let i = 0; i < m; i++) {
+      const r = find(i); if (!id.has(r)) { id.set(r, first ? v : n + extra.length); if (!first) extra.push(v); first = false; }
+      G[list[i]] = id.get(r);
+    }
+  }
+  const map = new Int32Array(n + extra.length); for (let i = 0; i < n; i++) map[i] = i; for (let k = 0; k < extra.length; k++) map[n + k] = extra[k];
+  return { F: G, map };
 }
 
 // ------------------------------------------------------------------ the carrier
@@ -323,7 +395,11 @@ export class Carrier {
     const { L, m } = cotanLaplacian(this.Fi, this.Li, n);
     this.L = L; this.m = m; this.Ldiag = csrDiagonal(L);
     this.area = m.reduce((s, v) => s + v, 0);
-    this.N = vertexNormals(this.V, this.F, n);
+    // a non-orientable carrier (a Möbius band) has a seam where the faces' winding flips; its normals are taken per side,
+    // and it is shown cut open along the seam (this.cut) so that each side shades smoothly
+    const seam = seamEdges(this.F, n); this.seam = seam.count;
+    this.N = vertexNormals(this.V, this.F, n, seam.count ? seam.vflag : null);
+    this.cut = seam.count ? cutAlongSeam(this.F, n, seam) : null;
     let omega = 0; for (let i = 0; i < n; i++) if (!this.boundary[i]) omega += this.K[i];
     this.omega = omega;
     // Euler characteristic from the extrinsic faces
@@ -704,34 +780,18 @@ export class Carrier {
    *  (the intrinsic tangent space of geometry-central). Built once. */
   _rings() {
     if (this._ring) return this._ring;
-    const { n, V, F } = this, nf = F.length / 3;
-    const outA = Array.from({ length: n }, () => []), outB = Array.from({ length: n }, () => []), outAng = Array.from({ length: n }, () => []);
+    const { n, V, F } = this, nf = F.length / 3, CA = new Float64Array(3 * nf);
     const ang = (v, a, b) => {
       const ux = V[3 * a] - V[3 * v], uy = V[3 * a + 1] - V[3 * v + 1], uz = V[3 * a + 2] - V[3 * v + 2];
       const wx = V[3 * b] - V[3 * v], wy = V[3 * b + 1] - V[3 * v + 1], wz = V[3 * b + 2] - V[3 * v + 2];
       return Math.acos(Math.max(-1, Math.min(1, (ux * wx + uy * wy + uz * wz) / Math.max(Math.hypot(ux, uy, uz) * Math.hypot(wx, wy, wz), 1e-300))));
     };
-    for (let f = 0; f < nf; f++) for (let k = 0; k < 3; k++) {
-      const v = F[3 * f + k], a = F[3 * f + (k + 1) % 3], b = F[3 * f + (k + 2) % 3];
-      outA[v].push(a); outB[v].push(b); outAng[v].push(ang(v, a, b));
-    }
-    const ring = new Array(n);
-    for (let v = 0; v < n; v++) {
-      const A = outA[v], B = outB[v], G = outAng[v], m = A.length;
-      if (!m) { ring[v] = { nb: [], cum: [], total: 0 }; continue; }
-      let start = 0; const bset = new Set(B);
-      for (let i = 0; i < m; i++) if (!bset.has(A[i])) { start = i; break; }     // boundary: begin at the open side
-      const nb = [A[start]], cum = [0]; let cur = start, total = 0, guard = 0;
-      while (guard++ <= m) {
-        total += G[cur]; const nxt = B[cur]; const i2 = A.indexOf(nxt);
-        if (i2 < 0 || nxt === A[start]) { if (i2 >= 0 && nxt === A[start]) break; nb.push(nxt); cum.push(total); break; }
-        nb.push(nxt); cum.push(total); cur = i2;
-      }
-      const closed = !this.boundary[v] && nb.length === m;
-      const scale = closed && total > 1e-9 ? 2 * Math.PI / total : 1;
-      ring[v] = { nb, cum: cum.map(x => x * scale), total: total * scale };
-    }
-    this._ring = ring; return ring;
+    for (let f = 0; f < nf; f++) for (let k = 0; k < 3; k++) CA[3 * f + k] = ang(F[3 * f + k], F[3 * f + (k + 1) % 3], F[3 * f + (k + 2) % 3]);
+    // rosy.js · buildRings: the old oriented walk where the faces agree; across a non-orientable carrier's seam the walk
+    // goes on whatever the winding, and sg marks the edges where two rings turn opposite ways
+    const R = buildRings(F, n, this.boundary, CA, null, false, this.seam ? { V, N: this.N } : null);
+    this._ring = R.map(r => ({ nb: r.nb, cum: r.ang, total: r.total, sg: r.sg }));
+    return this._ring;
   }
 
   /** geodesic polar chart around c: ρ from the heat method; θ by the discrete exponential map propagated upwind
@@ -749,6 +809,9 @@ export class Carrier {
     const rho = this.heatDistance(c), n = this.n, ring = this._rings(), V = this.V;
     const px = new Float64Array(n), py = new Float64Array(n), rot = new Float64Array(n), done = new Uint8Array(n);
     const angIn = (v, w) => { const r = ring[v], i = r.nb.indexOf(w); return i < 0 ? NaN : r.cum[i]; };
+    const sgIn = (v, w) => { const r = ring[v]; if (!r.sg) return 1; const i = r.nb.indexOf(w); return i < 0 ? 1 : r.sg[i]; };
+    // or[j] = ±1: whether j's ring turns like the chart (−1 past the seam of a non-orientable carrier)
+    const or = new Int8Array(n).fill(1);
     const order = Array.from({ length: n }, (_, i) => i).sort((i, j) => rho[i] - rho[j]);
     done[c] = 1; rot[c] = 0;
     for (const j of order) {
@@ -758,10 +821,10 @@ export class Carrier {
       for (let k = G.indptr[j]; k < G.indptr[j + 1]; k++) { const q = G.indices[k]; if (done[q] && rho[q] < best && Number.isFinite(angIn(q, j))) { best = rho[q]; p = q; } }
       if (p < 0) { done[j] = 1; continue; }
       const len = Math.hypot(V[3 * j] - V[3 * p], V[3 * j + 1] - V[3 * p + 1], V[3 * j + 2] - V[3 * p + 2]);
-      const dir = rot[p] + angIn(p, j);
+      const dir = rot[p] + or[p] * angIn(p, j);
       px[j] = px[p] + len * Math.cos(dir); py[j] = py[p] + len * Math.sin(dir);
-      const back = angIn(j, p);
-      rot[j] = Number.isFinite(back) ? Math.atan2(py[p] - py[j], px[p] - px[j]) - back : 0;
+      const back = angIn(j, p); or[j] = or[p] * sgIn(p, j);
+      rot[j] = Number.isFinite(back) ? Math.atan2(py[p] - py[j], px[p] - px[j]) - or[j] * back : 0;
       done[j] = 1;
     }
     const theta = new Float64Array(n);

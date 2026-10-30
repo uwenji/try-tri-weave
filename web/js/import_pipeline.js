@@ -3,8 +3,8 @@
 // small holes (< 3 h) → isotropic remesh at h (features kept) → centre → outward side → angle defects →
 // intrinsic Delaunay (edge flips on lengths) → quality / meta. The result is what an .lshc file holds.
 import { readMesh } from './meshio.js';
-import { weld, dedupeFaces, repairCracks, orientFaces, manifoldTable, dropSmallParts, stripPlanarCaps, fillSmallHoles, bounds, faceAreas } from './meshrepair.js';
-import { remeshIsotropic } from './remesh.js';
+import { weld, dedupeFaces, repairCracks, orientFaces, manifoldTable, dropSmallParts, stripPlanarCaps, fillSmallHoles, bounds, faceAreas, cutPaths, zipCut } from './meshrepair.js';
+import { remeshIsotropic, relaxRegion } from './remesh.js';
 import { flipToDelaunay, angleDefects, orientSide, edgeTable } from './carrier.js';
 
 export const IMPORT_DEFAULTS = { edges: 120, maxVerts: 26000, creaseDeg: 40, stripCaps: true, iters: 10, up: '+z' };
@@ -62,7 +62,15 @@ export function prepareCarrier(buf, name, opts = {}, progress = () => {}) {
   say(0.07, 'closing cracks');
   const cr = repairCracks(V, F); F = cr.F; if (cr.splits) notes.push(`closed cracks: ${cr.splits} T-junction splits`);
   say(0.09, 'orienting');
-  const or = orientFaces(F, V.length / 3); F = or.F; if (or.conflicts) notes.push(`non-orientable: ${or.conflicts} edges cut`);
+  // a non-orientable surface (a Möbius band) has no consistent winding: it is cut open along a short edge path for the
+  // repair and the remesh (both need an oriented corner table) and glued back after the remesh
+  const or = orientFaces(F, V.length / 3, V); F = or.F;
+  let cut = null;
+  if (or.conflicts) {
+    const paths = cutPaths(V, or.cut);
+    cut = { paths, edges: or.conflicts };
+    notes.push(`non-orientable: cut along ${or.conflicts} edges (${or.cutLength.toPrecision(3)} long, shortened from ${or.cutLength0.toPrecision(3)}) for the remesh`);
+  }
   let mt = manifoldTable(V, F); V = mt.V; F = mt.F; let O = mt.O;
   if (mt.nonManifoldEdges) notes.push(`cut ${mt.nonManifoldEdges} non-manifold edges`);
   if (mt.splitVerts) notes.push(`split ${mt.splitVerts} non-manifold vertices`);
@@ -78,13 +86,22 @@ export function prepareCarrier(buf, name, opts = {}, progress = () => {}) {
   // vertex cap: a regular mesh at edge h has ≈ 1.2 A / h² vertices (the zoo carriers: 1.15–1.38)
   const nEst = 1.2 * area / (h * h);
   if (nEst > o.maxVerts) h *= Math.sqrt(nEst / o.maxVerts) * 1.02;
-  let res, filled = 0;
+  let res, filled = 0, remIn = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     ({ V, F, O } = base);
     const fh = fillSmallHoles(V, F, O, 3 * h); filled = fh.filled;
     if (fh.filled) { ({ V, F, O } = manifoldTable(fh.V, fh.F)); }
     say(0.12, `remeshing at h = ${h.toPrecision(3)}`);
-    res = remeshIsotropic(V, F, h, { O, iters: o.iters, creaseDeg: o.creaseDeg, progress: (f, t) => say(0.12 + 0.78 * f, t) });
+    // the cut's vertices slide along it (its zigzag along the input edges makes no corners); its ends on the rim stay
+    let fixed = null, soft = null;
+    if (cut && cut.paths) {
+      const tag = new Map(), key = (P, i) => `${P[3 * i]},${P[3 * i + 1]},${P[3 * i + 2]}`;
+      for (const p of cut.paths) { const k = p.P.length / 3; for (let i = 0; i < k; i++) tag.set(key(p.P, i), !p.closed && (i === 0 || i === k - 1) ? 2 : 1); }
+      const nv = V.length / 3; fixed = new Uint8Array(nv); soft = new Uint8Array(nv);
+      for (let v = 0; v < nv; v++) { const t = tag.get(key(V, v)); if (t === 2) fixed[v] = 1; else if (t === 1) soft[v] = 1; }
+    }
+    remIn = { V, F };
+    res = remeshIsotropic(V, F, h, { O, iters: o.iters, creaseDeg: o.creaseDeg, fixed, soft, progress: (f, t) => say(0.12 + 0.78 * f, t) });
     const n = res.V.length / 3;
     if (n <= o.maxVerts) break;
     h *= Math.sqrt(n / o.maxVerts) * 1.05;
@@ -92,6 +109,26 @@ export function prepareCarrier(buf, name, opts = {}, progress = () => {}) {
   if (filled) notes.push(`filled ${filled} boundary loops shorter than 3 h`);
   if (h > (o.h || bb0.diag / o.edges) * 1.001) notes.push(`h coarsened to ${h.toPrecision(3)} for the ${o.maxVerts} vertex cap`);
   V = res.V; F = res.F;
+  if (cut && !cut.paths) notes.push('the orientation cut branches: kept open');
+  else if (cut) {
+    say(0.91, 're-gluing the orientation cut');
+    const open = cut.paths.filter(p => !p.closed);
+    const z = open.length === cut.paths.length ? zipCut(V, F, open, h) : { error: 'a closed cut' };
+    if (z.error) notes.push(`the orientation cut was kept open (${z.error})`);
+    else {
+      // smooth the seam and two rings around it (the merged sampling of its two sides), back onto the input surface
+      const nz = z.V.length / 3, rank = new Uint8Array(nz), onB = new Uint8Array(nz), move = new Uint8Array(nz);
+      for (let i = 0; i < z.idx.length; i++) if (z.idx[i] >= 0) rank[z.idx[i]] = res.rank[i];
+      const ec = new Map(); for (let f = 0; f < z.F.length / 3; f++) for (let k = 0; k < 3; k++) { const a = z.F[3 * f + k], b = z.F[3 * f + (k + 1) % 3], kk = a < b ? a * 4294967296 + b : b * 4294967296 + a; ec.set(kk, (ec.get(kk) || 0) + 1); }
+      for (const [kk, c] of ec) if (c === 1) { onB[Math.floor(kk / 4294967296)] = 1; onB[kk % 4294967296] = 1; }
+      let ring = Uint8Array.from(z.seam);
+      for (let r = 0; r < 2; r++) { const nx = Uint8Array.from(ring); for (let f = 0; f < z.F.length / 3; f++) { const t = [z.F[3 * f], z.F[3 * f + 1], z.F[3 * f + 2]]; if (t.some(v => ring[v])) for (const v of t) nx[v] = 1; } ring = nx; }
+      for (let v = 0; v < nz; v++) move[v] = ring[v] && !onB[v] && (z.seam[v] || rank[v] === 0) ? 1 : 0;
+      relaxRegion(z.V, z.F, move, remIn.V, remIn.F);
+      V = z.V; F = z.F;
+      notes.push(`re-glued the cut after the remesh (${z.nSeam} seam vertices): a non-orientable carrier`);
+    }
+  }
   const n = V.length / 3;
   // centre (bounding-box centre, as carrier.py), outward side
   const bb = bounds(V), cen = [0, 1, 2].map(k => 0.5 * (bb.lo[k] + bb.hi[k]));

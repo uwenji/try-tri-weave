@@ -308,7 +308,8 @@ Pages site takes a user's model without Python and without uploading it anywhere
    rotates the carrier itself (`UP_ROT`, `upChange` in `import_pipeline.js`) — the remesh does not depend on the
    orientation — and the choice is stored in the carrier's meta (`options.up`) and in the browser for the next file.
 2. **repair** (`meshrepair.js`) — weld (1e-6 of the bbox, hashed), drop degenerate and duplicate faces, close T-junction
-   cracks (`repair_cracks`), orient consistently (BFS; a Möbius-like conflict is cut), cut edges with more than two faces
+   cracks (`repair_cracks`), orient consistently (BFS; a non-orientable mesh — a Möbius band — is cut along a short edge
+   path and glued back after the remesh, see *Non-orientable carriers*), cut edges with more than two faces
    and split vertices whose corners form more than one fan, so the corner table is a manifold; drop loose parts smaller
    than 4 h²; strip planar caps (`strip_planar_caps`, not when the flat part is most of the model, e.g. a box); fill
    boundary loops shorter than 3 h (`fill_small_holes`).
@@ -318,7 +319,9 @@ Pages site takes a user's model without Python and without uploading it anywhere
    own side, so thin parts do not merge). The boundary and creases (dihedral > 40°) are feature lines: their vertices
    slide along the line and are projected onto it; line ends, junctions, corners (turning > 45° over h/2) and apices
    (|K| > 20°, the cone tips) are fixed. Two fixed points closer than h/2 merge. h is coarsened for the vertex cap
-   (26 000) from the area (n ≈ 1.2 A/h²) before the remesh, and again if the result is still over.
+   (26 000) from the area (n ≈ 1.2 A/h²) before the remesh, and again if the result is still over. The orientation cut of
+   a non-orientable mesh is a boundary here too, but its zigzag along the input edges makes no corners (its vertices
+   slide along it) and only its two ends on the rim are fixed; after the remesh its two sides are re-glued.
 4. **carrier** — centre, outward side (`orientSide`), angle defects, intrinsic Delaunay flips (`flipToDelaunay`), the
    same meta as the Python export (χ, ∫K, h, min angle, skinny %, notes). `Download .lshc` writes it in the carriers/
    format.
@@ -333,3 +336,43 @@ The lattice does not tell the two carriers apart. Global SH on 10 zoo shapes, Py
 (bench of `Tri-Weave-Lattice-Equations.html`, CPU, non-6 vertices): v4Cone_sharp 2 / 1, v3Cone_sharp 4 / 8, v3Cone_round 3 / 3,
 v5Cone_sharp 1 / 1, v4Cone_round 9 / 9, saddle1 1 / 1, Tube 0 / 0, torus 24 / 18, genus 2 38 / 39, Bunny 45 / 40 — 127 / 120 in
 all; the spread of the lattice edge (CV 0.05–0.11) is the same on both.
+
+## Non-orientable carriers — a Möbius band (2026-10-30)
+A Möbius band has no consistent winding. The import used to leave it cut open where the orientation BFS met itself, so
+the carrier was a disc (χ = 1 instead of 0) with a free edge across the band, the two sides of that cut remeshed
+independently (mobius_surface.stl: 106 of 374 cut vertices still coincided; min angle 3°, mobius.stl 0° with 4 % slivers).
+SH saw a rim there: the pattern grew up to the cut from both sides without meeting — a seam line of 5s and 7s, and a 10–12
+valent peak where the cut met the rim (the Voronoi cell of a rim peak wrapping round the cut end). SH itself needs no
+orientation (cotan Laplacian and mass from lengths); what did:
+* **import** (`meshrepair.js · orientFaces, cutPaths, zipCut`, `remesh.js · relaxRegion`) — the BFS conflicts are a zigzag
+  through a row of faces or a staircase (mobius.stl: 117 long for a band 10 wide); single faces are turned over while that
+  shortens the cut (→ 10.5), the disc is remeshed with the cut as a sliding feature line (ends on the rim fixed), then the
+  two sides — both on the cut path, sampled independently — are merged into one sampling (samples of the two sides closer
+  than h/2, mutual nearest, become one vertex at their mean arc length; every other sample is inserted into the opposite
+  boundary edge, a fan in that edge's face) and welded, and the seam and two rings round it are smoothed tangentially back
+  onto the input. The carrier is the real surface: χ = 0, one rim, faces wound alike except across the seam (min angle
+  24–26°, 0 % slivers). The notes say `non-orientable: cut along … edges` and `re-glued the cut after the remesh`.
+* **carrier** (`carrier.js`) — `seamEdges`: the edges whose two faces run the same way along them; normals per side at the
+  seam; `flipToDelaunay` links such a pair and flips it like any edge (the winding of the flipped pair follows the first
+  face, so the seam moves with the flip); `cutAlongSeam` makes the display copy (`carrier.cut`).
+* **rings and frames** (`rosy.js · buildRings`, used by `intrinsicFrames` and `Carrier._rings`) — the walk round a vertex goes
+  through the shared edges whatever the faces' winding, keeps the oriented rings unchanged where the faces agree, and at a
+  seam vertex turns the way most faces run counter-clockwise about N; `sg = −1` marks the edges where two rings turn
+  opposite ways, `eps` the faces a ring passes against their winding. Across such an edge the parallel transport is a
+  reflection, t ↦ ρ − t: the smoothest RoSy couples z_j to e^{iNρ} z̄_i (a symmetric real 2×2 block, the rest of the
+  connection Laplacian unchanged), its index is read per face in the face's own turning sense, `liftField` and the stripe
+  coupling (`stripeCoupling`) transport by the reflection, and the local seed's log map flips its turning sense past the
+  seam (`or`).
+* **view** (`view.js`) — the carrier is drawn cut open along the seam (one copy of each seam vertex per side, colours mapped
+  through `cut.map`), so both sides shade smoothly; the lattice, peaks, valence discs, cones, centre, RoSy strokes, strain
+  bars and orientation arrows are drawn on both sides (a one-sided surface has no outside to choose). `heal.js · burgers`
+  compares Burgers vectors with the normals on one side.
+On every orientable carrier all of this reduces to the old code bit for bit (rings, frames, flips, normals, log map, RoSy,
+stripes, lifts on cylinder, Tube, saddle1, genus2 and the reversed treeBig; imports of saddle1 and v3Cone_sharp identical).
+Ji's files, a = bbox/13, SH (−0.08, 1.2), 3000+ steps, singular peaks (old cut carrier → re-glued):
+mobius.stl global seed 1 (a 12 at the cut end, and 124 peaks for 72 sites) → 0 (no field singularity, no branch point;
+×2: 0 of 115 interior sites); local seed (v7 at the curvature maximum) 2 → 1–2. mobius_surface.stl (a closed-looking bulb
+with a throat, ∫K ≈ 0 but curved everywhere) global 20 → 17 (after Heal pairs 16 → 11, no 8), local 20 → 19 (14 → 15); the
+remaining 5s and 7s sit on the bulb and the throat, not on the seam. Sheets: `localize/experiments/mobius/`.
+Not done yet: the laths' over/under is still referred to the normals, which flip across the seam (a parity break there in
+the display; whether a kagome weave closes up on a Möbius band is its own question).

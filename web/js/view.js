@@ -178,11 +178,15 @@ export class View {
     for (const o of [this.geoField, this.stripeGeo, this.matField, this.matStripes]) o?.dispose?.();   // whichever the mesh is not showing
     this.stripeGeo = null; this.carrierMode = 'vertex';
     for (const k of Object.keys(this.layers)) this._setLayer(k, null);
+    // a non-orientable carrier (a Möbius band) is drawn cut open along its seam (carrier.cut: the faces in the same order,
+    // a copy of every seam vertex per side), so that each side is wound alike and shades smoothly; per-vertex colours
+    // are mapped through cut.map, and the lattice marks are drawn on both sides (a one-sided surface has no "outside")
+    const rmap = c.cut ? c.cut.map : null; this.rmap = rmap; this.twoSided = !!rmap;
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(c.V), 3));
-    geo.setIndex(new THREE.BufferAttribute(Uint32Array.from(c.F), 1));
+    geo.setAttribute('position', new THREE.BufferAttribute(rmap ? Float32Array.from({ length: 3 * rmap.length }, (_, k) => c.V[3 * rmap[(k / 3) | 0] + k % 3]) : Float32Array.from(c.V), 3));
+    geo.setIndex(new THREE.BufferAttribute(Uint32Array.from(rmap ? c.cut.F : c.F), 1));
     geo.computeVertexNormals();
-    this.colorAttr = new THREE.BufferAttribute(new Float32Array(c.n * 3).fill(0.85), 3);
+    this.colorAttr = new THREE.BufferAttribute(new Float32Array((rmap ? rmap.length : c.n) * 3).fill(0.85), 3);
     this.colorAttr.setUsage(THREE.DynamicDrawUsage);
     geo.setAttribute('color', this.colorAttr);
     this.geoField = geo; this.matField = this._fieldMaterial(); this.matStripes = this._stripeMaterial();
@@ -204,6 +208,7 @@ export class View {
 
   setFieldColors(values, cmap, lo, hi) {
     if (!this.colorAttr) return;
+    if (this.rmap && values.length !== this.rmap.length) { const r = this.rmap; if (!this._rv || this._rv.length !== r.length) this._rv = new Float64Array(r.length); for (let i = 0; i < r.length; i++) this._rv[i] = values[r[i]]; values = this._rv; }
     mapColors(values, this.colorAttr.array, cmap, lo, hi); this.colorAttr.needsUpdate = true;
   }
 
@@ -260,7 +265,7 @@ export class View {
     if (this.stripeGeo) { if (this.mesh && this.mesh.geometry === this.stripeGeo) this.mesh.geometry = this.geoField; this.stripeGeo.dispose(); this.stripeGeo = null; }
     const c = this.carrier;
     if (!c || !this.geoField || !phase || phase.length !== 3 * c.F.length) { if (this.carrierMode === 'stripes') this.setCarrierMode('vertex'); return false; }
-    const F = c.F, nf = F.length / 3, V = c.V, Nv = this.geoField.attributes.normal.array, pos = new Float32Array(9 * nf), nrm = new Float32Array(9 * nf);
+    const F = c.cut ? c.cut.F : c.F, nf = F.length / 3, V = this.geoField.attributes.position.array, Nv = this.geoField.attributes.normal.array, pos = new Float32Array(9 * nf), nrm = new Float32Array(9 * nf);
     for (let f = 0; f < nf; f++) for (let j = 0; j < 3; j++) {
       const v = F[3 * f + j], o = 9 * f + 3 * j;
       pos[o] = V[3 * v]; pos[o + 1] = V[3 * v + 1]; pos[o + 2] = V[3 * v + 2]; nrm[o] = Nv[3 * v]; nrm[o + 1] = Nv[3 * v + 1]; nrm[o + 2] = Nv[3 * v + 2];
@@ -316,43 +321,54 @@ export class View {
     if (!c || !cones || !cones.length) { this._setLayer('cones', null); return; }
     const g = new THREE.Group(), da = this.a || 8 * c.h;
     cones.forEach((q, i) => {
-      const sp = this._disc(String(q.valence), q.on === false ? '#8a8e95' : valenceHex(q.valence), this.lifted(q.vertex, 2.6 * c.h), (i === selected ? 1.4 : 1) * Math.max(2.2 * c.h, 0.34 * da), { kind: 'cone', idx: i }, true);
-      sp.renderOrder = 7; g.add(sp);
+      for (const sd of this.sides()) {
+        const sp = this._disc(String(q.valence), q.on === false ? '#8a8e95' : valenceHex(q.valence), this.lifted(q.vertex, sd * 2.6 * c.h), (i === selected ? 1.4 : 1) * Math.max(2.2 * c.h, 0.34 * da), { kind: 'cone', idx: i }, true);
+        sp.renderOrder = 7; g.add(sp);
+      }
     });
     this._setLayer('cones', g);
   }
 
   // --- lattice overlays ------------------------------------------------------------------------------------
   lifted(idx, k) { const c = this.carrier, s = k * this.sideSign; return [c.V[3 * idx] + s * c.N[3 * idx], c.V[3 * idx + 1] + s * c.N[3 * idx + 1], c.V[3 * idx + 2] + s * c.N[3 * idx + 2]]; }
+  /** the lift directions of an overlay: one side (the chosen one), or both on a one-sided carrier, whose normals flip
+   *  across the seam */
+  sides() { return this.twoSided ? [1, -1] : [1]; }
+  /** the normals of two nearby carrier vertices point to opposite sides (the seam of a one-sided carrier lies between) */
+  normalsFlip(p, q) { const N = this.carrier.N; return N[3 * p] * N[3 * q] + N[3 * p + 1] * N[3 * q + 1] + N[3 * p + 2] * N[3 * q + 2] < 0; }
 
   setLattice(lat, summary) {
     const c = this.carrier;
     this.lat = lat;
     if (!lat) { this._setLayer('lattice', null); this._setLayer('peaks', null); this._setLayer('singular', null); this._setLayer('selected', null); return; }
-    const lift = 0.6 * c.h, npk = lat.peaks.length;
-    const P = new Float32Array(npk * 3);
-    for (let i = 0; i < npk; i++) { const q = this.lifted(lat.peaks[i], lift); P[3 * i] = q[0]; P[3 * i + 1] = q[1]; P[3 * i + 2] = q[2]; }
+    const lift = 0.6 * c.h, npk = lat.peaks.length, sides = this.sides();
+    const P = new Float32Array(npk * 3 * sides.length);                      // one copy per side (peak i of side s at s·npk + i)
+    sides.forEach((sd, s) => { for (let i = 0; i < npk; i++) { const q = this.lifted(lat.peaks[i], sd * lift); P.set(q, 3 * (s * npk + i)); } });
     this.latticeP = P;
     // edges
     const seen = new Set(), segs = [];
     const T = lat.tris;
     for (let t = 0; t < T.length / 3; t++) for (const [i, j] of [[T[3 * t], T[3 * t + 1]], [T[3 * t + 1], T[3 * t + 2]], [T[3 * t + 2], T[3 * t]]]) {
       const k = i < j ? i * 1e5 + j : j * 1e5 + i; if (seen.has(k)) continue; seen.add(k);
-      segs.push(P[3 * i], P[3 * i + 1], P[3 * i + 2], P[3 * j], P[3 * j + 1], P[3 * j + 2]);
+      // an edge across the seam joins the copy of i on one side to the copy of j on the same side (its normal flipped)
+      const fl = sides.length > 1 && this.normalsFlip(lat.peaks[i], lat.peaks[j]);
+      for (let s = 0; s < sides.length; s++) { const a = 3 * (s * npk + i), b = 3 * ((fl ? 1 - s : s) * npk + j); segs.push(P[a], P[a + 1], P[a + 2], P[b], P[b + 1], P[b + 2]); }
     }
     const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(segs), 3));
     this._setLayer('lattice', new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: this.colKnot, transparent: true, opacity: 0.9 })));
     // peaks (small spheres)
-    const pk = spheres(P, npk, 0.28 * c.h, (i, col) => col.copy(this.colKnot)); pk.userData.kind = 'peaks';
+    const pk = spheres(P, npk * sides.length, 0.28 * c.h, (i, col) => col.copy(this.colKnot)); pk.userData.kind = 'peaks';
     this._setLayer('peaks', pk);
     // singular vertices: labelled discs, one child per vertex, grouped by valence through userData
     const g = new THREE.Group();
     for (const i of summary.singular) {
       const da = this.a || 8 * c.h;                                        // disc size follows the lattice edge
-      const v = lat.valence[i], q = this.lifted(lat.peaks[i], 1.6 * c.h);
-      const sp = this._disc(String(v), valenceHex(v), q, Math.max(1.9 * c.h, 0.3 * da), { kind: 'vertex', peak: i, valence: v });
-      sp.visible = this.showValence[v] !== false;
-      g.add(sp);
+      const v = lat.valence[i];
+      for (const sd of sides) {
+        const sp = this._disc(String(v), valenceHex(v), this.lifted(lat.peaks[i], sd * 1.6 * c.h), Math.max(1.9 * c.h, 0.3 * da), { kind: 'vertex', peak: i, valence: v });
+        sp.visible = this.showValence[v] !== false;
+        g.add(sp);
+      }
     }
     this._setLayer('singular', g);
   }
@@ -362,9 +378,9 @@ export class View {
   setRosy(dirs, len) {
     const c = this.carrier;
     if (!c || !dirs) { this._setLayer('rosy', null); return; }
-    const n = c.n, lift = 0.4 * c.h, segs = new Float32Array(n * 3 * 6); let k = 0;
-    for (let i = 0; i < n; i++) {
-      const p = this.lifted(i, lift);
+    const n = c.n, lift = 0.4 * c.h, sides = this.sides(), segs = new Float32Array(n * 3 * 6 * sides.length); let k = 0;
+    for (let i = 0; i < n; i++) for (const sd of sides) {
+      const p = this.lifted(i, sd * lift);
       for (const d of dirs) { const dx = d[3 * i] * len / 2, dy = d[3 * i + 1] * len / 2, dz = d[3 * i + 2] * len / 2;
         segs[k++] = p[0] - dx; segs[k++] = p[1] - dy; segs[k++] = p[2] - dz; segs[k++] = p[0] + dx; segs[k++] = p[1] + dy; segs[k++] = p[2] + dz; }
     }
@@ -376,18 +392,19 @@ export class View {
     const c = this.carrier, lat = this.lat;
     if (!lat || peak < 0 || peak >= lat.peaks.length) { this._setLayer('selected', null); return; }
     const da = this.a || 8 * c.h;
-    const v = lat.valence[peak], q = this.lifted(lat.peaks[peak], 1.9 * c.h);
-    const sp = this._disc(String(peak), valenceHex(v), q, Math.max(2.9 * c.h, 0.46 * da), { kind: 'vertex', peak, valence: v });
-    sp.renderOrder = 6;
-    const g = new THREE.Group(); g.add(sp);
+    const v = lat.valence[peak], g = new THREE.Group();
+    for (const sd of this.sides()) {
+      const sp = this._disc(String(peak), valenceHex(v), this.lifted(lat.peaks[peak], sd * 1.9 * c.h), Math.max(2.9 * c.h, 0.46 * da), { kind: 'vertex', peak, valence: v });
+      sp.renderOrder = 6; g.add(sp);
+    }
     this.visible.selected = true; this._setLayer('selected', g);
   }
 
   setCentre(idx) {
     const c = this.carrier;
     if (!c || idx < 0) { this._setLayer('centre', null); return; }
-    const q = this.lifted(idx, 0.9 * c.h);                                  // below the valence disc of the same vertex
-    this._setLayer('centre', spheres(Float32Array.from(q), 1, 0.42 * c.h, (i, col) => col.copy(this.colAccent)));
+    const q = this.sides().flatMap(sd => this.lifted(idx, sd * 0.9 * c.h));    // below the valence disc of the same vertex
+    this._setLayer('centre', spheres(Float32Array.from(q), q.length / 3, 0.42 * c.h, (i, col) => col.copy(this.colAccent)));
   }
 
   /** the carrier's intrinsic Delaunay triangulation: shared edges in the mesh colour, flipped (geodesic) edges in the
@@ -504,16 +521,16 @@ export class View {
     if (!keep.length) { this._setLayer('strain', null); return; }
     const da = this.a || 8 * c.h, radius = Math.max(0.035 * da, 0.22 * c.h), lift = 1.0 * c.h;
     const geo = new THREE.CylinderGeometry(radius, radius, 1, 6, 1), mat = new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0 });
-    const inst = new THREE.InstancedMesh(geo, mat, keep.length), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
+    const sides = this.sides(), inst = new THREE.InstancedMesh(geo, mat, keep.length * sides.length), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
     const Y = new THREE.Vector3(0, 1, 0), A = new THREE.Vector3(), B = new THREE.Vector3(), D = new THREE.Vector3(), M = new THREE.Vector3(), SC = new THREE.Vector3();
-    keep.forEach((e, k) => {
-      const [i, j] = edges[e];
-      A.fromArray(this.lifted(pk[i], lift)); B.fromArray(this.lifted(pk[j], lift));
+    sides.forEach((sd, si) => keep.forEach((e, k0) => {
+      const [i, j] = edges[e], k = si * keep.length + k0;
+      A.fromArray(this.lifted(pk[i], sd * lift)); B.fromArray(this.lifted(pk[j], (sides.length > 1 && this.normalsFlip(pk[i], pk[j]) ? -sd : sd) * lift));
       D.subVectors(B, A); const len = D.length() || 1e-9; D.divideScalar(len); M.addVectors(A, B).multiplyScalar(0.5);
       q.setFromUnitVectors(Y, D); SC.set(1, len * 0.92, 1);
       m4.compose(M, q, SC); inst.setMatrixAt(k, m4);
       const rgb = lutColor('coolwarm', 0.5 + 0.5 * es.strain[e] / range); col.setRGB(rgb[0], rgb[1], rgb[2]); inst.setColorAt(k, col);
-    });
+    }));
     inst.instanceMatrix.needsUpdate = true; if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
     inst.userData.kind = 'strain';
     this._setLayer('strain', inst);
@@ -531,10 +548,10 @@ export class View {
     if (!idx.length) { this._setLayer('orient', null); return; }
     const da = this.a || 8 * c.h, back = 0.24 * da, front = 0.3 * da, headL = 0.13 * da, headW = 0.065 * da, shaftW = 0.016 * da;
     const lift = 1.0 * c.h, sg = this.sideSign, c30 = Math.cos(Math.PI / 6), s30 = Math.sin(Math.PI / 6);
-    const pos = new Float32Array(idx.length * 27), col = new Float32Array(idx.length * 27);   // 3 triangles per arrow
+    const sides = this.sides(), pos = new Float32Array(idx.length * 27 * sides.length), col = new Float32Array(idx.length * 27 * sides.length);   // 3 triangles per arrow
     const amber = new THREE.Color('#DDAA33'), red = new THREE.Color('#BB3355'), cc = new THREE.Color();
-    idx.forEach((i, k) => {
-      const v = lat.peaks[i], M = this.lifted(v, lift), n = [sg * c.N[3 * v], sg * c.N[3 * v + 1], sg * c.N[3 * v + 2]];
+    sides.forEach((sd, si) => idx.forEach((i, k0) => {
+      const k = si * idx.length + k0, v = lat.peaks[i], M = this.lifted(v, sd * lift), n = [sd * sg * c.N[3 * v], sd * sg * c.N[3 * v + 1], sd * sg * c.N[3 * v + 2]];
       const l = [arrow[3 * i], arrow[3 * i + 1], arrow[3 * i + 2]], gl = cross3(n, l);
       const d = [0, 1, 2].map(q => c30 * l[q] + s30 * gl[q]), g = cross3(n, d);
       const P = (s, t) => [M[0] + s * d[0] + t * g[0], M[1] + s * d[1] + t * g[1], M[2] + s * d[2] + t * g[2]];
@@ -544,10 +561,10 @@ export class View {
       if (mode === 'angle') { const rgb = lutColor('twilight', (theta[i] + 30) / 60); cc.setRGB(rgb[0], rgb[1], rgb[2]); }
       else { const t = Math.max(0, Math.min(1, ((mis[i] || 0) - 2) / 13)); if (t < 0.5) cc.lerpColors(this.colKnot, amber, t / 0.5); else cc.lerpColors(amber, red, (t - 0.5) / 0.5); }
       for (let m = 0; m < 9; m++) col.set([cc.r, cc.g, cc.b], 27 * k + 3 * m);
-    });
+    }));
     const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
-    mesh.renderOrder = 3; mesh.userData.kind = 'orient'; mesh.userData.map = Int32Array.from(idx);   // 3 faces per arrow
+    mesh.renderOrder = 3; mesh.userData.kind = 'orient'; mesh.userData.map = Int32Array.from(sides.length > 1 ? idx.concat(idx) : idx);   // 3 faces per arrow
     this._setLayer('orient', mesh);
   }
 
@@ -576,7 +593,7 @@ export class View {
     if (kind === 'cone') return { kind: 'cone', idx: o.userData.idx, point: h.point };
     if (kind === 'vertex') return { kind: 'vertex', peak: o.userData.peak, point: h.point };
     if (kind === 'lath') return { kind: 'lath', strand: this.lathFaceStrand ? this.lathFaceStrand[h.faceIndex] : -1, point: h.point };
-    if (kind === 'peaks') return { kind: 'vertex', peak: h.instanceId, point: h.point };
+    if (kind === 'peaks') return { kind: 'vertex', peak: this.lat ? h.instanceId % this.lat.peaks.length : h.instanceId, point: h.point };
     if (kind === 'orient') return { kind: 'vertex', peak: o.userData.map[Math.floor(h.faceIndex / 3)], point: h.point };
     const F = this.carrier.F, V = this.carrier.V, f = h.faceIndex;
     let best = -1, bd = Infinity;

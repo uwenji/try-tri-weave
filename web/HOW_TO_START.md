@@ -105,7 +105,8 @@ What "ideal" looks like: exactly one singular peak and Σ(6−n) = round(Ω/60°
   remesh) and is kept for the next file. `import options`: `edges / bbox` (120 → h = bbox/120, as export_carrier.py),
   `max v` (26 000; h is coarsened to fit), `crease °` (40: sharper edges are kept as feature lines), `strip planar caps`;
   `Remesh again` reruns the last file with them. `Download .lshc` saves the carrier; dropping that file later loads it
-  without the remesh.
+  without the remesh. A non-orientable surface (a Möbius band) is cut open for the remesh and glued back: the card says
+  `re-glued the cut after the remesh`, χ is 0, and the lattice runs across the seam (drawn on both sides).
 * Into the zoo list: put the file in `../model/zoo/` and run `python ../export_carrier.py name` in the `weavesim` env
   (needs `pip install gpytoolbox potpourri3d`). This writes `carriers/name.lshc` and adds it to `manifest.json`.
   Reload the page. (A downloaded `.lshc` copied into `carriers/` and added to `manifest.json` works the same.)

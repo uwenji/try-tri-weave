@@ -126,7 +126,9 @@ function closestOnSeg(px, py, pz, V, ia, ib) {
 // ------------------------------------------------------------------ input features
 /** feature chains of the input: boundary + creases, split at ends / junctions / corners; short crease chains
  *  (< minCreaseLen) dropped; apices |K| > sharpDeg fixed. Returns per-corner chain id, per-vertex rank / chain. */
-export function detectFeatures(V, F, O, { creaseDeg = 40, sharpDeg = 20, cornerDeg = 45, minCreaseLen = 0, window = 0 } = {}) {
+/*  fixed / soft (per vertex, optional): vertices forced to be fixed (the ends of a non-orientable mesh's cut on the rim) /
+ *  never made corners by the turning test (the cut itself: its zigzag along the input edges is not a feature). */
+export function detectFeatures(V, F, O, { creaseDeg = 40, sharpDeg = 20, cornerDeg = 45, minCreaseLen = 0, window = 0, fixed = null, soft = null } = {}) {
   const n = V.length / 3, nc = F.length, N = faceNormals(V, F), cosCr = Math.cos(creaseDeg * Math.PI / 180);
   const flag = new Uint8Array(nc), VB = new Uint8Array(n), degen = new Uint8Array(nc / 3);
   for (let f = 0; f < nc / 3; f++) {                                        // needles / zero-area faces have no normal:
@@ -165,7 +167,7 @@ export function detectFeatures(V, F, O, { creaseDeg = 40, sharpDeg = 20, cornerD
     edges.forEach((c, e) => { inc[pos[F[nxt(c)]]++] = e; inc[pos[F[prv(c)]]++] = e; });
     const other = (e, v) => { const c = edges[e], a = F[nxt(c)]; return a === v ? F[prv(c)] : a; };
     rank = new Uint8Array(n);
-    for (let v = 0; v < n; v++) { const k = deg[v + 1] - deg[v]; rank[v] = apex[v] || (k > 0 && k !== 2) ? 3 : k === 2 ? 2 : 0; }
+    for (let v = 0; v < n; v++) { const k = deg[v + 1] - deg[v]; rank[v] = apex[v] || (k > 0 && k !== 2) || (fixed && fixed[v] && k > 0) ? 3 : k === 2 ? 2 : 0; }
     // walk chains between fixed vertices (and closed loops without any); a chain keeps its vertex sequence
     const walkAll = () => {
       chainOf = new Int32Array(edges.length).fill(-1); chains = [];
@@ -203,6 +205,7 @@ export function detectFeatures(V, F, O, { creaseDeg = 40, sharpDeg = 20, cornerD
         while ((ch.closed || j > 0) && arc(i, j) < window && i - j < m - 1) j--;
         while ((ch.closed || k < m - 1) && arc(i, k) < window && k - i < m - 1) k++;
         const v = at(i), x = at(j), y = at(k);
+        if (soft && soft[v]) continue;
         const ax = V[3 * v] - V[3 * x], ay = V[3 * v + 1] - V[3 * x + 1], az = V[3 * v + 2] - V[3 * x + 2];
         const bx = V[3 * y] - V[3 * v], by = V[3 * y + 1] - V[3 * v + 1], bz = V[3 * y + 2] - V[3 * v + 2];
         const cs = (ax * bx + ay * by + az * bz) / Math.max(Math.hypot(ax, ay, az) * Math.hypot(bx, by, bz), 1e-300);
@@ -237,7 +240,7 @@ export function remeshIsotropic(V0, F0, h, opts = {}) {
   const lo2 = (0.8 * h) ** 2, hi2 = (4 / 3 * h) ** 2, hard2 = (0.5 * h) ** 2;
   const n0 = V0.length / 3, m0 = F0.length / 3;
   const O0 = opts.O || edgeMates(F0, n0, true).O;
-  const feat = detectFeatures(V0, F0, O0, { creaseDeg: opts.creaseDeg ?? 40, sharpDeg: opts.sharpDeg ?? 20, cornerDeg: opts.cornerDeg ?? 45, minCreaseLen: opts.minCreaseLen ?? 1.5 * h, window: 0.5 * h });
+  const feat = detectFeatures(V0, F0, O0, { creaseDeg: opts.creaseDeg ?? 40, sharpDeg: opts.sharpDeg ?? 20, cornerDeg: opts.cornerDeg ?? 45, minCreaseLen: opts.minCreaseLen ?? 1.5 * h, window: 0.5 * h, fixed: opts.fixed || null, soft: opts.soft || null });
 
   // --- projection targets: input triangles (with unit normals) and input feature segments (with chain id)
   const TN = faceNormals(V0, F0);
@@ -546,4 +549,51 @@ export function remeshIsotropic(V0, F0, h, opts = {}) {
   }
   compact();
   return { V: P.slice(0, 3 * nv), F: C.slice(0, 3 * nf), rank: RK.slice(0, nv), stats };
+}
+
+// ------------------------------------------------------------------ smoothing a patch (the re-glued seam)
+/** Tangential smoothing of the vertices flagged in `verts` (the re-glued seam of a non-orientable carrier and its
+ *  neighbourhood), each sweep followed by the projection back onto the input surface (V0, F0). The faces around the
+ *  seam come with both windings, so a vertex's normal is its face normals turned to agree with its largest face.
+ *  V is changed in place. */
+export function relaxRegion(V, F, verts, V0, F0, { iters = 8, step = 0.5 } = {}) {
+  const m = F.length / 3, m0 = F0.length / 3;
+  const tlo = new Float64Array(3 * m0), thi = new Float64Array(3 * m0);
+  for (let f = 0; f < m0; f++) for (let k = 0; k < 3; k++) {
+    const a = V0[3 * F0[3 * f] + k], b = V0[3 * F0[3 * f + 1] + k], c = V0[3 * F0[3 * f + 2] + k];
+    tlo[3 * f + k] = Math.min(a, b, c); thi[3 * f + k] = Math.max(a, b, c);
+  }
+  const T = buildBVH(tlo, thi, m0), nb = new Map(), fc = new Map();
+  for (let f = 0; f < m; f++) for (let k = 0; k < 3; k++) {
+    const v = F[3 * f + k]; if (!verts[v]) continue;
+    let s = nb.get(v); if (!s) { nb.set(v, s = new Set()); fc.set(v, []); }
+    s.add(F[3 * f + (k + 1) % 3]); s.add(F[3 * f + (k + 2) % 3]); fc.get(v).push(f);
+  }
+  const fn = (f) => {
+    const a = 3 * F[3 * f], b = 3 * F[3 * f + 1], c = 3 * F[3 * f + 2];
+    const ux = V[b] - V[a], uy = V[b + 1] - V[a + 1], uz = V[b + 2] - V[a + 2], wx = V[c] - V[a], wy = V[c + 1] - V[a + 1], wz = V[c + 2] - V[a + 2];
+    return [uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx];
+  };
+  let moved = 0;
+  for (let it = 0; it < iters; it++) {
+    const next = [];
+    for (const [v, s] of nb) {
+      let cx = 0, cy = 0, cz = 0; for (const w of s) { cx += V[3 * w]; cy += V[3 * w + 1]; cz += V[3 * w + 2]; }
+      cx /= s.size; cy /= s.size; cz /= s.size;
+      const ns = fc.get(v).map(fn); let ref = ns[0], rl = 0; for (const q of ns) { const l = Math.hypot(...q); if (l > rl) { rl = l; ref = q; } }
+      let nx = 0, ny = 0, nz = 0; for (const q of ns) { const sg = q[0] * ref[0] + q[1] * ref[1] + q[2] * ref[2] < 0 ? -1 : 1; nx += sg * q[0]; ny += sg * q[1]; nz += sg * q[2]; }
+      const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      let dx = cx - V[3 * v], dy = cy - V[3 * v + 1], dz = cz - V[3 * v + 2]; const dn = dx * nx + dy * ny + dz * nz;
+      dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
+      next.push(v, V[3 * v] + step * dx, V[3 * v + 1] + step * dy, V[3 * v + 2] + step * dz);
+    }
+    for (let k = 0; k < next.length; k += 4) {
+      const v = next[k], px = next[k + 1], py = next[k + 2], pz = next[k + 3];
+      const r = bvhQuery(T, px, py, pz, Infinity, (f) => closestOnTri(px, py, pz, V0, 3 * F0[3 * f], 3 * F0[3 * f + 1], 3 * F0[3 * f + 2]));
+      if (r.prim < 0) continue;
+      closestOnTri(px, py, pz, V0, 3 * F0[3 * r.prim], 3 * F0[3 * r.prim + 1], 3 * F0[3 * r.prim + 2]);
+      V[3 * v] = Q[0]; V[3 * v + 1] = Q[1]; V[3 * v + 2] = Q[2]; moved++;
+    }
+  }
+  return { moved: nb.size };
 }

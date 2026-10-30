@@ -298,16 +298,23 @@ export function freePairs(lat, links = peakLinks(lat)) {
  *  perpendicular to its 5→7 bond — b = n × (r₇ − r₅), n the mean normal of the two sites. Two dislocations annihilate
  *  only when their Burgers vectors are opposite (a 5→7 bond pointing the other way); with b at 120° they merge into one
  *  dislocation, parallel ones never meet. Compared between nearby pairs by the 3-D dot product. */
-export function burgers(lat, c, pr) {
+export function burgers(lat, c, pr, ref = null) {
   const V = c.V, N = c.N, B = lat.peaks[pr.b], C = lat.peaks[pr.c];
   const d = [V[3 * C] - V[3 * B], V[3 * C + 1] - V[3 * B + 1], V[3 * C + 2] - V[3 * B + 2]];
-  const n = [N[3 * B] + N[3 * C], N[3 * B + 1] + N[3 * C + 1], N[3 * B + 2] + N[3 * C + 2]], nl = Math.hypot(...n) || 1;
-  n[0] /= nl; n[1] /= nl; n[2] /= nl;
+  // on a non-orientable carrier the normals flip across the seam: take the two sites' normals on one side (and on the
+  // side of `ref`, the other pair's normal, when two pairs are compared)
+  const sc = c.seam && N[3 * B] * N[3 * C] + N[3 * B + 1] * N[3 * C + 1] + N[3 * B + 2] * N[3 * C + 2] < 0 ? -1 : 1;
+  const n = [N[3 * B] + sc * N[3 * C], N[3 * B + 1] + sc * N[3 * C + 1], N[3 * B + 2] + sc * N[3 * C + 2]], nl = Math.hypot(...n) || 1;
+  const sr = ref && n[0] * ref[0] + n[1] * ref[1] + n[2] * ref[2] < 0 ? -1 : 1;
+  n[0] *= sr / nl; n[1] *= sr / nl; n[2] *= sr / nl;
   return [n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0]];
 }
 /** cosine of the angle between the Burgers vectors of two free pairs: −1 for an annihilating (anti-parallel) couple */
 export function burgersCos(lat, c, p1, p2) {
-  const b1 = burgers(lat, c, p1), b2 = burgers(lat, c, p2);
+  const N = c.N, B = lat.peaks[p1.b], C = lat.peaks[p1.c];
+  const sc = N[3 * B] * N[3 * C] + N[3 * B + 1] * N[3 * C + 1] + N[3 * B + 2] * N[3 * C + 2] < 0 ? -1 : 1;
+  const ref = c.seam ? [N[3 * B] + sc * N[3 * C], N[3 * B + 1] + sc * N[3 * C + 1], N[3 * B + 2] + sc * N[3 * C + 2]] : null;
+  const b1 = burgers(lat, c, p1, ref), b2 = burgers(lat, c, p2, ref);
   return (b1[0] * b2[0] + b1[1] * b2[1] + b1[2] * b2[2]) / ((Math.hypot(...b1) * Math.hypot(...b2)) || 1);
 }
 

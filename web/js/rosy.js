@@ -10,38 +10,113 @@ import { csrFromCOO, pcg } from './sparse.js';
 const TWO_PI = 2 * Math.PI;
 export const wrapPi = (x) => x - TWO_PI * Math.floor((x + Math.PI) / TWO_PI);
 
+/** Rings of a triangulation (the intrinsic Fi or the extrinsic F) that need not be consistently oriented: along the
+ *  seam of a non-orientable carrier (a Möbius band) the faces around a vertex come with both windings. Per vertex the
+ *  neighbours in the order of the faces around it, walked through the shared edges whatever the faces' winding, with
+ *  cumulative corner angles (rescaled to 2π at interior vertices). Where the faces agree, the walk follows their
+ *  winding (against it with `reverse`) and starts where the oriented rings always started — the open side of a
+ *  boundary vertex, else the first corner — so an orientable carrier gets exactly the rings it had. Where they disagree,
+ *  the walk takes the direction in which most faces run counter-clockwise about orient.N (orient = {V, N}; without it,
+ *  the direction of most windings). CA: the corner angles (3 per face); CL (optional): the length of each corner's side
+ *  to the next ring vertex, for h. Returns rings [{nb, ang, total, h, sg?}] with rings.eps: Int8Array(3 nf), +1 where
+ *  the ring of F[c] passes face ⌊c/3⌋ along its (reversed) winding, −1 against; and per ring sg[i] = σ(v, nb[i]) = ±1,
+ *  whether the two rings turn the same way across that edge. eps and sg only where some value is −1 (else null /
+ *  absent): a parallel transport across a σ = −1 edge is a reflection. */
+export function buildRings(F, n, boundary, CA, CL = null, reverse = false, orient = null) {
+  const nf = F.length / 3, nc = 3 * nf, nx3 = (c) => (c % 3 === 2 ? c - 2 : c + 1), pv3 = (c) => (c % 3 === 0 ? c + 2 : c - 1);
+  const off = new Int32Array(n + 1); for (let c = 0; c < nc; c++) off[F[c] + 1]++;
+  for (let i = 0; i < n; i++) off[i + 1] += off[i];
+  const fill = off.slice(0, n), cor = new Int32Array(nc); for (let c = 0; c < nc; c++) cor[fill[F[c]]++] = c;   // corners per vertex, face order
+  const eps = new Int8Array(nc).fill(1), rings = new Array(n), A = [], B = [], used = [];
+  let anyMixed = false;
+  for (let v = 0; v < n; v++) {
+    const s0 = off[v], m = off[v + 1] - s0;
+    if (!m) { rings[v] = { nb: [], ang: [], total: 0, h: 0 }; continue; }
+    A.length = B.length = used.length = 0;
+    for (let i = 0; i < m; i++) { const c = cor[s0 + i]; A.push(reverse ? F[pv3(c)] : F[nx3(c)]); B.push(reverse ? F[nx3(c)] : F[pv3(c)]); used.push(0); }
+    const count = (w) => { let k = 0; for (let i = 0; i < m; i++) { if (A[i] === w) k++; if (B[i] === w) k++; } return k; };
+    let st = -1, d = 1;                                                       // boundary: begin at the open side
+    for (let i = 0; i < m; i++) if (count(A[i]) === 1) { st = i; break; }
+    if (st < 0) for (let i = 0; i < m; i++) if (count(B[i]) === 1) { st = i; d = -1; break; }
+    if (st < 0) st = 0;
+    let nb = [d > 0 ? A[st] : B[st]], ang = [0], cur = st, total = 0, guard = 0, mixed = false; used[st] = 1;
+    while (guard++ <= m) {
+      const c = cor[s0 + cur]; total += CA[c]; eps[c] = d; if (d < 0) mixed = true;
+      const ex = d > 0 ? B[cur] : A[cur];
+      if (ex === nb[0]) break;                                                // back at the start: closed
+      let k2 = -1, d2 = 1;
+      for (let i = 0; i < m; i++) { if (used[i]) continue; if (A[i] === ex) { k2 = i; d2 = 1; break; } if (B[i] === ex) { k2 = i; d2 = -1; break; } }
+      nb.push(ex); ang.push(total);
+      if (k2 < 0) break;
+      used[k2] = 1; cur = k2; d = d2;
+    }
+    if (mixed) {                                                             // faces of both windings: pick the direction
+      anyMixed = true; let score = 0;
+      for (let i = 0; i < m; i++) {
+        const c = cor[s0 + i]; let w = 1;
+        if (orient) {
+          const { V, N } = orient, f = c - c % 3, a = 3 * F[f], b = 3 * F[f + 1], e = 3 * F[f + 2];
+          const ux = V[b] - V[a], uy = V[b + 1] - V[a + 1], uz = V[b + 2] - V[a + 2], wx = V[e] - V[a], wy = V[e + 1] - V[a + 1], wz = V[e + 2] - V[a + 2];
+          const dn = (uy * wz - uz * wy) * N[3 * v] + (uz * wx - ux * wz) * N[3 * v + 1] + (ux * wy - uy * wx) * N[3 * v + 2];
+          w = (reverse ? -dn : dn) < 0 ? -1 : 1;
+        }
+        score += eps[c] * w;
+      }
+      if (score < 0) {
+        const closedWalk = nb.length === m && !boundary[v];
+        if (closedWalk) { nb = [nb[0], ...nb.slice(1).reverse()]; ang = [0, ...ang.slice(1).reverse().map(x => total - x)]; }
+        else { nb = nb.reverse(); ang = ang.reverse().map(x => total - x); }
+        for (let i = 0; i < m; i++) eps[cor[s0 + i]] *= -1;
+      }
+    }
+    const closed = !boundary[v] && nb.length === m, scale = closed && total > 1e-9 ? TWO_PI / total : 1;
+    let hs = 0; if (CL) for (let i = 0; i < m; i++) hs += CL[cor[s0 + i]];
+    rings[v] = { nb, ang: ang.map(x => x * scale), total: total * scale, h: hs / m };
+  }
+  rings.eps = null;
+  if (!anyMixed) { let neg = false; for (let c = 0; c < nc && !neg; c++) if (eps[c] < 0) neg = true; if (!neg) return rings; }
+  // σ across every ring edge, from a face holding both ends: σ = eps(v's corner) · eps(w's corner)
+  rings.eps = eps;
+  for (let v = 0; v < n; v++) {
+    const r = rings[v], s0 = off[v], m = off[v + 1] - s0; let sg = null;
+    for (let i = 0; i < r.nb.length; i++) {
+      const w = r.nb[i]; let s = 1;
+      for (let j = 0; j < m; j++) {
+        const c = cor[s0 + j], f = c - c % 3;
+        const k = F[f] === w ? f : F[f + 1] === w ? f + 1 : F[f + 2] === w ? f + 2 : -1;
+        if (k >= 0) { s = eps[c] * eps[k]; break; }
+      }
+      if (s < 0) { if (!sg) sg = new Int8Array(r.nb.length).fill(1); sg[i] = -1; }
+    }
+    if (sg) r.sg = sg;
+  }
+  return rings;
+}
+
 /** Rings and frames on an intrinsic triangulation. Returns {nb, ang, total, h} per vertex: ordered neighbours,
- *  cumulative angle of each (rescaled so the total is 2π at interior vertices), and the mean incident edge length. */
-export function intrinsicFrames(Fi, Len, n, boundary, reverse = false) {
-  const nf = Fi.length / 3, outA = Array.from({ length: n }, () => []), outB = Array.from({ length: n }, () => []), outG = Array.from({ length: n }, () => []), outL = Array.from({ length: n }, () => []);
+ *  cumulative angle of each (rescaled so the total is 2π at interior vertices), and the mean incident edge length;
+ *  on a non-orientable carrier also sg (per neighbour) and frames.eps (buildRings). orient = {V, N} (optional). */
+export function intrinsicFrames(Fi, Len, n, boundary, reverse = false, orient = null) {
+  const nf = Fi.length / 3, CA = new Float64Array(3 * nf), CL = new Float64Array(3 * nf);
   for (let f = 0; f < nf; f++) {
     const l = [Len[3 * f], Len[3 * f + 1], Len[3 * f + 2]];
     for (let k = 0; k < 3; k++) {
-      const v = Fi[3 * f + k];
       // ring order follows the face orientation; `reverse` when Fi is wound opposite to F (Python-exported carriers)
-      const a = reverse ? Fi[3 * f + (k + 2) % 3] : Fi[3 * f + (k + 1) % 3], b = reverse ? Fi[3 * f + (k + 1) % 3] : Fi[3 * f + (k + 2) % 3];
       const la = reverse ? l[(k + 2) % 3] : l[k], lb = reverse ? l[k] : l[(k + 2) % 3], lo = l[(k + 1) % 3];   // sides v→a, b→v, opposite
       const cs = Math.max(-1, Math.min(1, (la * la + lb * lb - lo * lo) / (2 * la * lb)));
-      outA[v].push(a); outB[v].push(b); outG[v].push(Math.acos(cs)); outL[v].push(la);
+      CA[3 * f + k] = Math.acos(cs); CL[3 * f + k] = la;
     }
   }
-  const frames = new Array(n);
-  for (let v = 0; v < n; v++) {
-    const A = outA[v], B = outB[v], G = outG[v], m = A.length;
-    if (!m) { frames[v] = { nb: [], ang: [], total: 0, h: 0 }; continue; }
-    const bset = new Set(B); let start = 0;
-    for (let i = 0; i < m; i++) if (!bset.has(A[i])) { start = i; break; }        // boundary: begin at the open side
-    const nb = [A[start]], ang = [0]; let cur = start, total = 0, guard = 0;
-    while (guard++ <= m) {
-      total += G[cur]; const nxt = B[cur], i2 = A.indexOf(nxt);
-      if (i2 < 0 || nxt === A[start]) { if (!(i2 >= 0 && nxt === A[start])) { nb.push(nxt); ang.push(total); } break; }
-      nb.push(nxt); ang.push(total); cur = i2;
-    }
-    const closed = !boundary[v] && nb.length === m, scale = closed && total > 1e-9 ? TWO_PI / total : 1;
-    let hs = 0; for (const x of outL[v]) hs += x;
-    frames[v] = { nb, ang: ang.map(x => x * scale), total: total * scale, h: hs / outL[v].length };
-  }
-  return frames;
+  return buildRings(Fi, n, boundary, CA, CL, reverse, orient);
+}
+
+/** parallel transport of a tangent angle along the edge p → q of the frames: T(α) = s·α + r — s = −1 (a reflection)
+ *  across the seam of a non-orientable carrier, where the two rings turn opposite ways. null if q is not in p's ring. */
+export function transport(frames, p, q) {
+  const fp = frames[p], fq = frames[q], ip = fp.nb.indexOf(q), iq = fq.nb.indexOf(p);
+  if (ip < 0 || iq < 0) return null;
+  const s = fp.sg ? fp.sg[ip] : 1;
+  return { s, r: s > 0 ? fq.ang[iq] + Math.PI - fp.ang[ip] : fq.ang[iq] + Math.PI + fp.ang[ip] };
 }
 
 /** true when the intrinsic faces are wound clockwise about the carrier normals (sampled over faces), so that the rings
@@ -85,10 +160,10 @@ function cotanFromLengths(Fi, Len, n) {
  */
 export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, cgMax = 300, log = null, constraints = null, x0 = null, mbo = null } = {}) {
   const { Fi, n, boundary } = c, L = Len || c.Li, reversed = fiReversed(c);
-  const frames = intrinsicFrames(Fi, L, n, boundary, reversed);
+  const frames = intrinsicFrames(Fi, L, n, boundary, reversed, c.V && c.N ? { V: c.V, N: c.N } : null);
   const { wmap, m } = cotanFromLengths(Fi, L, n);
   // directed edge data from the rings: transport r_ij for every (i → j) in i's ring
-  const rows = [], cols = [], vre = [], vim = [], diag = new Float64Array(n);
+  const rows = [], cols = [], vre = [], vim = [], diag = new Float64Array(n), refl = [];
   let wmed = 0; { const ws = Array.from(wmap.values()).sort((a, b) => a - b); wmed = ws[ws.length >> 1] || 1; }
   const wmin = 1e-3 * wmed;
   const angIn = (v, w) => { const f = frames[v], i = f.nb.indexOf(w); return i < 0 ? NaN : f.ang[i]; };
@@ -98,18 +173,28 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
     for (let q = 0; q < f.nb.length; q++) {
       const j = f.nb[q]; const r = rOf(i, j); if (!Number.isFinite(r)) continue;
       let w = wmap.get(i < j ? i * n + j : j * n + i) || 0; if (!(w > wmin)) w = wmin;
+      if (f.sg && f.sg[q] < 0) {
+        // the seam of a non-orientable carrier: the transport is a reflection, t_j = ρ − t_i, so the field arrives
+        // conjugated — the energy w|z_j − e^{iNρ} z̄_i|² couples (re, im) by the symmetric block −w [[cos Nρ, sin Nρ], [sin Nρ, −cos Nρ]]
+        const rho = angIn(j, i) + Math.PI + f.ang[q];
+        refl.push(i, j, w * Math.cos(N * rho), w * Math.sin(N * rho)); diag[i] += w; continue;
+      }
       // L_ij = −w e^{−iN r_ij}
       rows.push(i); cols.push(j); vre.push(-w * Math.cos(N * r)); vim.push(w * Math.sin(N * r)); diag[i] += w;
     }
   }
   for (let i = 0; i < n; i++) { rows.push(i); cols.push(i); vre.push(diag[i]); vim.push(0); }
-  const Ar = csrFromCOO(n, rows, cols, vre), Ai = csrFromCOO(n, rows, cols, vim);
-  // real embedding: [re; im] → [Ar re − Ai im; Ai re + Ar im]
+  const Ar = csrFromCOO(n, rows, cols, vre), Ai = csrFromCOO(n, rows, cols, vim), nR = refl.length / 4;
+  // real embedding: [re; im] → [Ar re − Ai im; Ai re + Ar im] (+ the reflection blocks)
   const spm = (A, x, off, y, yoff, sign) => { for (let i = 0; i < n; i++) { let s = 0; for (let k = A.indptr[i]; k < A.indptr[i + 1]; k++) s += A.data[k] * x[off + A.indices[k]]; y[yoff + i] += sign * s; } };
   let mTot = 0, dTot = 0; for (let i = 0; i < n; i++) { mTot += m[i]; dTot += diag[i]; }
   const eps = 1e-6 * dTot / mTot;                                                  // tiny shift keeps A positive definite
   const applyA = (x, out) => {
     out.fill(0); spm(Ar, x, 0, out, 0, 1); spm(Ai, x, n, out, 0, -1); spm(Ai, x, 0, out, n, 1); spm(Ar, x, n, out, n, 1);
+    for (let k = 0; k < nR; k++) {
+      const i = refl[4 * k], j = refl[4 * k + 1], wc = refl[4 * k + 2], ws = refl[4 * k + 3];
+      out[i] -= wc * x[j] + ws * x[n + j]; out[n + i] -= ws * x[j] - wc * x[n + j];
+    }
     for (let i = 0; i < n; i++) { out[i] += eps * m[i] * x[i]; out[n + i] += eps * m[i] * x[n + i]; }
   };
   const jac = new Float64Array(2 * n); for (let i = 0; i < n; i++) jac[i] = jac[n + i] = diag[i] + eps * m[i];
@@ -164,9 +249,18 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
   for (let i = 0; i < n; i++) { theta[i] = Math.atan2(im[i], re[i]) / N; mag[i] = Math.hypot(re[i], im[i]); if (mag[i] > mx) mx = mag[i]; }
   for (let i = 0; i < n; i++) mag[i] /= mx || 1;
   // per-face index
-  const nf = Fi.length / 3, idx = new Int8Array(nf), singular = [];
+  const nf = Fi.length / 3, idx = new Int8Array(nf), singular = [], fe = frames.eps;
   for (let f = 0; f < nf; f++) {
     const a = Fi[3 * f], b = Fi[3 * f + 1], cc = Fi[3 * f + 2]; let s = 0, h = 0;
+    if (fe && (fe[3 * f] < 0 || fe[3 * f + 1] < 0 || fe[3 * f + 2] < 0)) {
+      // a ring passes this face against its winding (non-orientable seam): measure every angle of the three frames
+      // in the face's own turning sense (θ → e θ, ring angles → e · angle, e = ±1 per corner), then as below
+      const e = (v) => fe[Fi[3 * f] === v ? 3 * f : Fi[3 * f + 1] === v ? 3 * f + 1 : 3 * f + 2];
+      for (const [p, q] of (reversed ? [[a, cc], [cc, b], [b, a]] : [[a, b], [b, cc], [cc, a]])) {
+        const ep = e(p), eq = e(q), r = eq * angIn(q, p) + Math.PI - ep * angIn(p, q); if (!Number.isFinite(r)) { s = NaN; break; }
+        h += r; s += wrapPi(N * eq * theta[q] - N * ep * theta[p] - N * r);
+      }
+    } else
     for (const [p, q] of (reversed ? [[a, cc], [cc, b], [b, a]] : [[a, b], [b, cc], [cc, a]])) {   // loop in the ring orientation
       const r = rOf(p, q); if (!Number.isFinite(r)) { s = NaN; break; }
       h += r; s += wrapPi(N * theta[q] - N * theta[p] - N * r);
@@ -222,7 +316,7 @@ export function transportAngle(frames, p, q) {
  */
 export function liftField(thetaBase, framesBase, nBase, cFine, N = 6, { sweeps = 3, Len = null } = {}) {
   const { Fi, Li, n, boundary, V } = cFine;                                   // Len: the fine carrier's lengths in ĝ, when the field lives there
-  const reversed = fiReversed(cFine), frames = intrinsicFrames(Fi, Len || Li, n, boundary, reversed);
+  const reversed = fiReversed(cFine), frames = intrinsicFrames(Fi, Len || Li, n, boundary, reversed, cFine.V && cFine.N ? { V, N: cFine.N } : null);
   const theta = new Float64Array(n).fill(NaN), done = new Uint8Array(n);
   for (let i = 0; i < nBase; i++) {
     const j0 = framesBase[i].nb[0]; if (j0 === undefined || !frames[i].nb.length) continue;
@@ -240,7 +334,7 @@ export function liftField(thetaBase, framesBase, nBase, cFine, N = 6, { sweeps =
   const assign = (m, onlyDone) => {
     let re = 0, im = 0; const f = frames[m];
     for (let q = 0; q < f.nb.length; q++) { const k = f.nb[q]; if (onlyDone && !done[k]) continue; if (Number.isNaN(theta[k])) continue;
-      const r = transportAngle(frames, k, m); if (!Number.isFinite(r)) continue; const a = N * (theta[k] + r); re += Math.cos(a); im += Math.sin(a); }
+      const t = transport(frames, k, m); if (!t || !Number.isFinite(t.r)) continue; const a = N * (t.s * theta[k] + t.r); re += Math.cos(a); im += Math.sin(a); }
     return re * re + im * im > 1e-30 ? Math.atan2(im, re) / N : NaN;
   };
   while (frontier.length) {
