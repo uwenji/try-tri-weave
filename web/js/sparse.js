@@ -55,9 +55,20 @@ export function csrDiagonal(A) {
 
 export function dot(a, b) { let s = 0.0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
 
+// faster solvers for the operators that carry a kernel description (applyA.par: rosy.js, stripes.js), all with the
+// same numbers, bit for bit: the thread pool (parallel.js, in a cross-origin isolated page) and the one-thread
+// WebAssembly kernels (pcg_wasm.js, anywhere). Each returns null for a solve it does not take; JS below is the rest.
+let PAR = null, WASM = null;
+export function setParallelPCG(fn) { PAR = fn; }
+export function setWasmPCG(fn) { WASM = fn; }
+
 /** Jacobi-PCG for SPD operators given as a function applyA(x, out). Returns {x, iters, relres}. applyA may return
  *  dot(x, out) summed in index order (it then equals dot(x, out) bit for bit), which saves one pass per iteration. */
 export function pcg(applyA, diag, b, x0, { maxIter = 500, tol = 1e-8, projectMean = null } = {}) {
+  if (applyA.par && !projectMean) {
+    if (PAR) { const res = PAR(applyA, diag, b, x0, { maxIter, tol }); if (res) return res; }
+    if (WASM) { const res = WASM(applyA, diag, b, x0, { maxIter, tol }); if (res) return res; }
+  }
   const n = b.length;
   const x = x0 ? Float64Array.from(x0) : new Float64Array(n);
   const r = new Float64Array(n), z = new Float64Array(n), p = new Float64Array(n), Ap = new Float64Array(n);

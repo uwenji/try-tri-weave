@@ -205,6 +205,7 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
     }
     for (let i = 0; i < n; i++) { out[i] += em[i] * x[i]; out[n + i] += em[i] * x[n + i]; }
   };
+  applyA.par = { kind: 'rosy', n, ip, ix, dr, di, em, refl: nR ? refl : null };   // the same operator for the solver threads (parallel.js)
   const jac = new Float64Array(2 * n); for (let i = 0; i < n; i++) jac[i] = jac[n + i] = diag[i] + eps * m[i];
   const normalise = (v) => { let s = 0; for (let i = 0; i < n; i++) s += m[i] * (v[i] * v[i] + v[n + i] * v[n + i]); s = Math.sqrt(s); for (let i = 0; i < 2 * n; i++) v[i] /= s; };
   let z = new Float64Array(2 * n), iters = 0, lam = 0;
@@ -252,6 +253,7 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
           out[i] = m[i] * x[i] + tau * (s1 - s2 + em[i] * x[i]); out[n + i] = m[i] * x[n + i] + tau * (s3 + s4 + em[i] * x[n + i]);
         }
       };
+    applyB.par = { kind: 'mbo', n, ip, ix, dr, di, em, refl: nR ? refl : null, m, tau };
     for (let it = 0; it < mbo.iters; it++) {
       for (let i = 0; i < n; i++) { const r = Math.hypot(z[i], z[n + i]) || 1; rhsB[i] = m[i] * z[i] / r; rhsB[n + i] = m[i] * z[n + i] / r; }
       const res = pcg(applyB, jacB, rhsB, z, { maxIter: cgMax, tol: cgTol }); iters += res.iters; z = res.x;

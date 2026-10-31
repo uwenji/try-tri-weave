@@ -188,7 +188,9 @@ async function globalField({ applySeed = true, force = false } = {}) {
     if (S.carrierView === 'rosysing' || S.carrierView === 'stripes' || S.carrierView === 'phi') updateCarrierColors();
     if (applySeed) {
       applyGlobalSeed(S.stripesRes);
-      setStatus(`seeded from the rotation field${ghat ? ` in ĝ (${d.cones.length} cones)` : ''} · ${d.singular.length} singularities, ${branch.length} branch points, ${(ms / 1000).toFixed(1)} s${resWarn}`);
+      // what solved it (global_worker.js · t): the solver threads, or one thread when they measured slower in this run
+      const how = d.t && d.t.threads > 1 ? ` on ${d.t.threads} threads` : d.t && d.t.pick ? ' on 1 thread (the threads measured slower)' : '';
+      setStatus(`seeded from the rotation field${ghat ? ` in ĝ (${d.cones.length} cones)` : ''} · ${d.singular.length} singularities, ${branch.length} branch points, ${(ms / 1000).toFixed(1)} s${how}${resWarn}`);
     } else setStatus(`rotation field computed for the display (${(ms / 1000).toFixed(1)} s) — the seed is unchanged`);
   } catch (e) { console.error(e); setStatus('rotation field failed: ' + e.message); }
   finally { if (req === S.globalReq) { S.globalBusy = false; if (applySeed) { S.seedPending = false; $('btn-rosy').disabled = false; if (S.playing) pump(); } } }

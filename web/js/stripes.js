@@ -222,6 +222,7 @@ export function stripes(c, rosy, q0, { Len = null, outer = 12, cgTol = 1e-5, cgM
     }
     return d;
   };
+  applyA.par = { kind: 'bsr6', nq, bp, bc, bv, em6 };                            // the same operator for the solver threads (parallel.js)
   const jac = new Float64Array(6 * n); for (let i = 0; i < 6 * n; i++) jac[i] = diag[i] + em6[i];
   const normalise = (v) => { let s = 0; for (let i = 0; i < 6 * n; i++) s += m6[i] * v[i] * v[i]; s = Math.sqrt(s) || 1; for (let i = 0; i < 6 * n; i++) v[i] /= s; };
   let z = new Float64Array(6 * n); { let s = 777; const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff - 0.5; }; for (let i = 0; i < 6 * n; i++) z[i] = rnd(); } normalise(z);

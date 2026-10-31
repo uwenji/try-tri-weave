@@ -86,6 +86,24 @@ What "ideal" looks like: exactly one singular peak and Σ(6−n) = round(Ω/60°
   (held after every batch of steps; `Clear pins` releases). Click again after more steps: new pairs may have
   formed. Bunny ×2: 67 → 59, goose ×2: 65 → 57 in a few seconds on the GPU.
 
+## Speed: WebAssembly and solver threads (2026-10-31)
+
+* The CG solves of the global seed (rotation field, unit-length steps, stripes) run in WebAssembly (`js/pcg_wasm.js`;
+  the kernels `pcg_kernels.c` are embedded in `js/pcg_wasm_bin.js`) and, where the page is cross-origin isolated, on
+  5 threads (`js/parallel.js`, `js/pcg_worker.js`) — the same results bit for bit as the JS solves. The status line
+  says what ran: `· 5 threads, wasm`, `· 1 thread, wasm` or `· 1 thread, js`, and so does the message at the end
+  (`seeded … 1.3 s on 5 threads`).
+* The threads check themselves: on the first solve of each size they time a few iterations against one thread, and
+  they keep timing while they run. Where they are slower (the browser at low priority, e.g. Chrome behind another
+  app) the rest runs in one thread, with the same results, and the message ends `on 1 thread (the threads measured
+  slower)`. Bunny ×2 in a Chrome behind the Claude app: 12–13 s on the threads before this check, 5–7 s with it.
+* Isolation: on GitHub Pages the service worker `coi-sw.js` provides it (the first visit reloads once by itself).
+  `python serve.py` here sends no isolation headers (one thread); `python ../multi_threading/serve.py` (port 8081)
+  does (threads). Locally, `?coi=1` in the address turns the service worker on, `?coi=0` removes it.
+* Bunny ×2 (cones from the curvature): 6.3 s before 31 Oct → 1.8 s in one thread with WebAssembly → 1.3 s with the
+  threads. Keep the tab in front while it solves: a background tab runs 3–6× slower.
+* Rebuilding the kernels needs clang with the wasm32 target (Homebrew `llvm`): `python3 ../multi_threading/wasm/build.py`.
+
 ## Size field and the direction layers (2026-10-13)
 
 * Section 3 → **conformal size field**: the lattice edge becomes a·e^{−φ} with φ from the surface curvature and the
@@ -113,8 +131,8 @@ What "ideal" looks like: exactly one singular peak and Σ(6−n) = round(Ω/60°
 
 ## Update the online version
 
-Copy `index.html`, `style.css`, `manifest.json`, `Tri-Weave-Lattice-Equations.html`, `carriers/`, `js/`, `vendor/`,
-`serve.py` and the two `.md` files into `TryTriWeave/web/`, then commit and push; GitHub Pages serves the folder as is
+Copy `index.html`, `style.css`, `manifest.json`, `Tri-Weave-Lattice-Equations.html`, `coi-sw.js`, `carriers/`, `js/`,
+`vendor/`, `serve.py` and the two `.md` files into `TryTriWeave/web/`, then commit and push; GitHub Pages serves the folder as is
 (<https://uwenji.github.io/try-tri-weave/web/>). The test, calibration and artifact files stay in `localize/web`.
 
 ## Layout (2026-10-18)
