@@ -42,14 +42,14 @@ export function stripeCoupling(frames, theta, N, q0, lenOf, key) {
     const ap = angIn(p, q), aq = angIn(q, p); if (!Number.isFinite(ap) || !Number.isFinite(aq)) return null;
     // across the seam of a non-orientable carrier the transport is a reflection: ν ↦ aq + π − (ν − ap)
     const r = aq + Math.PI - ap, target = sgIn(p, q) > 0 ? nu(p, k) + r : aq + Math.PI - (nu(p, k) - ap);
-    let best = null;
-    for (let kp = 0; kp < 3; kp++) for (const s of [1, -1]) {
+    let bk = -1, bs = 1, bd = 0;
+    for (let kp = 0; kp < 3; kp++) for (let s = 1; s >= -1; s -= 2) {
       const d = Math.abs(wrapPi(nu(q, kp) + (s < 0 ? Math.PI : 0) - target));
-      if (!best || d < best.d) best = { kp, s, d };
+      if (bk < 0 || d < bd) { bk = kp; bs = s; bd = d; }
     }
     const l = lenOf.get(key(p, q)) || 0;
-    const om = q0 * l * (Math.cos(nu(p, k) - ap) + best.s * Math.cos(nu(q, best.kp) - aq - Math.PI)) / 2;
-    return { kp: best.kp, rev: best.s < 0, om, mis: best.d };
+    const om = q0 * l * (Math.cos(nu(p, k) - ap) + bs * Math.cos(nu(q, bk) - aq - Math.PI)) / 2;
+    return { kp: bk, rev: bs < 0, om, mis: bd };
   };
 }
 
@@ -186,15 +186,50 @@ export function stripes(c, rosy, q0, { Len = null, outer = 12, cgTol = 1e-5, cgM
   const diag = new Float64Array(6 * n); for (let i = 0; i < 6 * n; i++) for (let k = A.indptr[i]; k < A.indptr[i + 1]; k++) if (A.indices[k] === i) diag[i] += A.data[k];
   let mTot = 0, dTot = 0; for (let i = 0; i < n; i++) { mTot += m[i]; dTot += diag[6 * i]; }
   const eps = 1e-6 * dTot / mTot;
-  const applyA = (x, out) => { for (let i = 0; i < 6 * n; i++) { let s = 0; for (let k = A.indptr[i]; k < A.indptr[i + 1]; k++) s += A.data[k] * x[A.indices[k]]; out[i] = s + eps * m[i / 6 | 0] * x[i]; } };
-  const jac = new Float64Array(6 * n); for (let i = 0; i < 6 * n; i++) jac[i] = diag[i] + eps * m[i / 6 | 0];
-  const normalise = (v) => { let s = 0; for (let i = 0; i < 6 * n; i++) s += m[i / 6 | 0] * v[i] * v[i]; s = Math.sqrt(s) || 1; for (let i = 0; i < 6 * n; i++) v[i] /= s; };
+  const ap = A.indptr, ax = A.indices, ad = A.data, m6 = new Float64Array(6 * n), em6 = new Float64Array(6 * n);
+  for (let i = 0; i < 6 * n; i++) { m6[i] = m[i / 6 | 0]; em6[i] = eps * m6[i]; }   // the vertex mass per unknown, and eps times it
+  // the operator in 2×2 blocks: the rows (Re, Im) of a family at a vertex, 6i + 2k and 6i + 2k + 1, couple to a
+  // neighbour's family as one 2×2 block (the diagonal is w·I), so one column index per block instead of four. Within a
+  // row the products are added in the same column order as the CSR row (an absent entry adds 0), so the same numbers;
+  // applyA also returns dot(x, out) for the CG
+  const nq = 3 * n, bp = new Int32Array(nq + 1); let nbk = 0;
+  for (let q = 0; q < nq; q++) {                                             // count the column pairs of each row pair
+    let k0 = ap[2 * q], k1 = ap[2 * q + 1]; const e0 = ap[2 * q + 1], e1 = ap[2 * q + 2];
+    while (k0 < e0 || k1 < e1) {
+      const J = Math.min(k0 < e0 ? ax[k0] : Infinity, k1 < e1 ? ax[k1] : Infinity) & ~1;
+      while (k0 < e0 && ax[k0] <= J + 1) k0++; while (k1 < e1 && ax[k1] <= J + 1) k1++; nbk++;
+    }
+    bp[q + 1] = nbk;
+  }
+  const bc = new Int32Array(nbk), bv = new Float64Array(4 * nbk);
+  for (let q = 0, b = 0; q < nq; q++) {
+    let k0 = ap[2 * q], k1 = ap[2 * q + 1]; const e0 = ap[2 * q + 1], e1 = ap[2 * q + 2];
+    while (k0 < e0 || k1 < e1) {
+      const J = Math.min(k0 < e0 ? ax[k0] : Infinity, k1 < e1 ? ax[k1] : Infinity) & ~1;
+      bc[b] = J;
+      while (k0 < e0 && ax[k0] <= J + 1) { bv[4 * b + (ax[k0] - J)] = ad[k0]; k0++; }
+      while (k1 < e1 && ax[k1] <= J + 1) { bv[4 * b + 2 + (ax[k1] - J)] = ad[k1]; k1++; }
+      b++;
+    }
+  }
+  const applyA = (x, out) => {
+    let d = 0;
+    for (let q = 0; q < nq; q++) {
+      let s0 = 0, s1 = 0;
+      for (let b = bp[q], e = bp[q + 1]; b < e; b++) { const J = bc[b], x0 = x[J], x1 = x[J + 1], v = 4 * b; s0 += bv[v] * x0; s0 += bv[v + 1] * x1; s1 += bv[v + 2] * x0; s1 += bv[v + 3] * x1; }
+      const r = 2 * q, o0 = s0 + em6[r] * x[r], o1 = s1 + em6[r + 1] * x[r + 1];
+      out[r] = o0; out[r + 1] = o1; d += x[r] * o0; d += x[r + 1] * o1;
+    }
+    return d;
+  };
+  const jac = new Float64Array(6 * n); for (let i = 0; i < 6 * n; i++) jac[i] = diag[i] + em6[i];
+  const normalise = (v) => { let s = 0; for (let i = 0; i < 6 * n; i++) s += m6[i] * v[i] * v[i]; s = Math.sqrt(s) || 1; for (let i = 0; i < 6 * n; i++) v[i] /= s; };
   let z = new Float64Array(6 * n); { let s = 777; const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff - 0.5; }; for (let i = 0; i < 6 * n; i++) z[i] = rnd(); } normalise(z);
-  const rhs = new Float64Array(6 * n); let iters = 0, lam = 0;
+  const rhs = new Float64Array(6 * n), Az = new Float64Array(6 * n); let iters = 0, lam = 0;
   for (let it = 0; it < outer; it++) {
-    for (let i = 0; i < 6 * n; i++) rhs[i] = m[i / 6 | 0] * z[i];
+    for (let i = 0; i < 6 * n; i++) rhs[i] = m6[i] * z[i];
     const res = pcg(applyA, jac, rhs, z, { maxIter: cgMax, tol: cgTol }); iters += res.iters;
-    const zn = res.x; normalise(zn); const Az = new Float64Array(6 * n); applyA(zn, Az); let num = 0, ch = 0;
+    const zn = res.x; normalise(zn); applyA(zn, Az); let num = 0, ch = 0;
     for (let i = 0; i < 6 * n; i++) { num += zn[i] * Az[i]; ch += (zn[i] - z[i]) ** 2; }
     lam = num; z = zn; if (log) log(`stripes it ${it}: λ = ${lam.toExponential(3)}, Δ = ${Math.sqrt(ch).toExponential(2)}`);
     if (it > 1 && Math.sqrt(ch) < 3e-4) break;

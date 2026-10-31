@@ -10,19 +10,31 @@ export function csrFromCOO(n, rows, cols, vals) {
   const pos = count.slice(0, n);
   const ci = new Int32Array(nnz), cv = new Float64Array(nnz);
   for (let k = 0; k < nnz; k++) { const p = pos[rows[k]]++; ci[p] = cols[k]; cv[p] = vals[k]; }
-  // sort each row by column and merge duplicates
-  const indptr = new Int32Array(n + 1), indices = [], data = [];
+  // sort each row by column and merge duplicates (stable: duplicates are summed in input order). Short rows by insertion
+  // sort in place, long ones by a stable index sort — the same order, so the same sums, as sorting every row
+  const indptr = new Int32Array(n + 1), indices = new Int32Array(nnz), data = new Float64Array(nnz);
+  let t = 0;
   for (let i = 0; i < n; i++) {
     const s = count[i], e = count[i + 1];
-    const idx = Array.from({ length: e - s }, (_, k) => s + k).sort((a, b) => ci[a] - ci[b]);
-    let last = -1;
-    for (const k of idx) {
-      if (ci[k] === last) data[data.length - 1] += cv[k];
-      else { indices.push(ci[k]); data.push(cv[k]); last = ci[k]; }
+    if (e - s <= 64) {
+      for (let a = s + 1; a < e; a++) {
+        const c = ci[a], v = cv[a]; let b = a - 1;
+        while (b >= s && ci[b] > c) { ci[b + 1] = ci[b]; cv[b + 1] = cv[b]; b--; }
+        ci[b + 1] = c; cv[b + 1] = v;
+      }
+    } else {
+      const idx = Array.from({ length: e - s }, (_, k) => s + k).sort((a, b) => ci[a] - ci[b]);
+      const c2 = idx.map(k => ci[k]), v2 = idx.map(k => cv[k]);
+      for (let k = 0; k < idx.length; k++) { ci[s + k] = c2[k]; cv[s + k] = v2[k]; }
     }
-    indptr[i + 1] = indices.length;
+    let last = -1;
+    for (let k = s; k < e; k++) {
+      if (ci[k] === last) data[t - 1] += cv[k];
+      else { indices[t] = ci[k]; data[t] = cv[k]; t++; last = ci[k]; }
+    }
+    indptr[i + 1] = t;
   }
-  return { n, indptr, indices: Int32Array.from(indices), data: Float64Array.from(data) };
+  return { n, indptr, indices: indices.slice(0, t), data: data.slice(0, t) };
 }
 
 export function spmv(A, x, y) {
@@ -43,7 +55,8 @@ export function csrDiagonal(A) {
 
 export function dot(a, b) { let s = 0.0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
 
-/** Jacobi-PCG for SPD operators given as a function applyA(x, out). Returns {x, iters, relres}. */
+/** Jacobi-PCG for SPD operators given as a function applyA(x, out). Returns {x, iters, relres}. applyA may return
+ *  dot(x, out) summed in index order (it then equals dot(x, out) bit for bit), which saves one pass per iteration. */
 export function pcg(applyA, diag, b, x0, { maxIter = 500, tol = 1e-8, projectMean = null } = {}) {
   const n = b.length;
   const x = x0 ? Float64Array.from(x0) : new Float64Array(n);
@@ -55,17 +68,28 @@ export function pcg(applyA, diag, b, x0, { maxIter = 500, tol = 1e-8, projectMea
   for (let i = 0; i < n; i++) { z[i] = r[i] / diag[i]; p[i] = z[i]; }
   let rz = dot(r, z), it = 0, rn = Math.sqrt(dot(r, r));
   while (it < maxIter && rn > tol * bnorm) {
-    applyA(p, Ap);
-    const pAp = dot(p, Ap);
+    const ret = applyA(p, Ap);                                              // an operator may return dot(p, Ap) itself
+    const pAp = typeof ret === 'number' ? ret : dot(p, Ap);
     if (!(pAp > 0)) break;
     const alpha = rz / pAp;
-    for (let i = 0; i < n; i++) { x[i] += alpha * p[i]; r[i] -= alpha * Ap[i]; }
-    if (projectMean) projectMean(r);
-    for (let i = 0; i < n; i++) z[i] = r[i] / diag[i];
-    const rzNew = dot(r, z);
+    let rzNew = 0, rr = 0;
+    if (projectMean) {
+      for (let i = 0; i < n; i++) { x[i] += alpha * p[i]; r[i] -= alpha * Ap[i]; }
+      projectMean(r);
+      for (let i = 0; i < n; i++) z[i] = r[i] / diag[i];
+      rzNew = dot(r, z); rr = dot(r, r);
+    } else {
+      // one pass for the update, the preconditioner and both dot products (same operations in the same order as the
+      // separate loops, so the same numbers)
+      for (let i = 0; i < n; i++) {
+        x[i] += alpha * p[i];
+        const ri = r[i] - alpha * Ap[i], zi = ri / diag[i];
+        r[i] = ri; z[i] = zi; rzNew += ri * zi; rr += ri * ri;
+      }
+    }
     const beta = rzNew / rz; rz = rzNew;
     for (let i = 0; i < n; i++) p[i] = z[i] + beta * p[i];
-    rn = Math.sqrt(dot(r, r)); it++;
+    rn = Math.sqrt(rr); it++;
   }
   return { x, iters: it, relres: rn / bnorm };
 }

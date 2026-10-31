@@ -1,6 +1,6 @@
 // The global (no-seed) pipeline, shared by global_worker.js (the app) and the Node tests:
 //   smoothest 6-RoSy on the base carrier (model metric g), relaxed to unit length (opts.mbo) so that its singularities sit
-//   on the curvature
+//   on the curvature (modes 'uniform' and 'field' only: 'greedy' places its cones from the curvature and needs no field in g)
 //   → cones and the conformal size field ĝ = e^{2φ} g (cones.js; skipped in mode 'uniform'), with the user's edits of the
 //     cones applied (off / valence / radius) and their alignment constraints (angle, weight) imposed on the ĝ field
 //   → smoothest 6-RoSy in ĝ (its singularities sit at the cones) → lifted to the refined carrier
@@ -23,25 +23,30 @@ export function carrierFromPack(d) {
  *   per level (Carrier.refined) · opts.mode: 'uniform' | 'greedy' | 'field' · opts.flat: {W, deg, ramp} keeps ĝ flat on the
  *   developable parts (cones.js · developableWeights) or null · opts.mbo: {core, iters} unit-length relaxation of the
  *   field (model metric, and ĝ) or null · opts.edits: user edits of the cones
- *   [{vertex, on, valence, radius, angle, weight}] · opts.post(stage): progress.
+ *   [{vertex, on, valence, radius, angle, weight}] · opts.post(stage): progress · opts.fieldInG: also solve the field in
+ *   the model metric in mode 'greedy', where nothing uses it (singularG / sumIndexG are null without it).
  */
-export function globalPipeline(cb, cf, { q0, a, mode = 'uniform', parents = null, edits = null, cache = {}, post = () => {}, log = null, coneOpts = { relax: 5 }, mbo = null, flat = null } = {}) {
+export function globalPipeline(cb, cf, { q0, a, mode = 'uniform', parents = null, edits = null, cache = {}, post = () => {}, log = null, coneOpts = { relax: 5 }, mbo = null, flat = null, fieldInG = false } = {}) {
   const t = {}, now = () => performance.now();
   let t0 = now();
   // mbo = {core (in a), iters}: the unit-length relaxation of the model-metric field; its core scales with a, so the field is
   // cached per (mbo, a) — without it, once per carrier
   const mboOpt = mbo && mbo.iters > 0 ? { tau: (mbo.core * a) ** 2, iters: mbo.iters } : null, rKey = mboOpt ? `mbo|${mbo.core}|${mbo.iters}|${a.toPrecision(5)}` : 'plain';
-  if (!cache.rosyG || cache.rosyGKey !== rKey) {
+  // the field in the model metric g is the seed in mode 'uniform' and gives the cones in mode 'field'; 'greedy' places
+  // its cones from the curvature alone and solves only the field in ĝ, so g's field is skipped there (opts.fieldInG
+  // asks for it anyway, for its singularities as a diagnostic)
+  const needG = mode !== 'greedy' || fieldInG;
+  if (needG && (!cache.rosyG || cache.rosyGKey !== rKey)) {
     post(`solving the rotation field on the base carrier${mboOpt ? ' (unit length)' : ''}…`);
     cache.rosyG = smoothestRoSy(cb, { mbo: mboOpt }); cache.rosyGKey = rKey; cache.liftG = null; cache.placed = null; t.rosy = now() - t0;
   }
-  const rosyG = cache.rosyG;
+  const rosyG = needG ? cache.rosyG : null;
   let placed = null, phiF = null, LenB = null, LenF = null, rosy = rosyG, lift = null, coneList = [], constraints = [];
   const flatKey = flat ? JSON.stringify(flat) : '', key = `${mode}|${a.toPrecision(5)}|${flatKey}`;
   if (mode !== 'uniform') {
     if (!cache.placed || cache.placed.key !== key) {
       post(`placing the cones of the size field ĝ (${mode})…`); t0 = now();
-      const v = placeCones(cb, a, { mode, fieldSingular: rosyG.singular, log, ...coneOpts, flat }); t.cones = now() - t0;
+      const v = placeCones(cb, a, { mode, fieldSingular: rosyG ? rosyG.singular : null, log, ...coneOpts, flat }); t.cones = now() - t0;
       cache.placed = { key, v };
     }
     const auto = cache.placed.v;
@@ -95,6 +100,6 @@ export function globalPipeline(cb, cf, { q0, a, mode = 'uniform', parents = null
   for (const sg of rosy.singular) for (let k = 0; k < 3; k++) src.push(cb.Fi[3 * sg.face + k]);        // base ids are kept by the refinement
   out.stripeFaces = cR.F ? stripeFaces(cR.F, cR.n, nbR, cf ? ls.edge : st.edge, out.psi, farthestVertex(nbR, cR.n, src), cR.V) : null; t.faces = now() - t0;
   const coneInfo = placed ? { edges: placed.edges, spread: placed.stats.spread, residualDeg: placed.residualDeg, net: placed.net, need: placed.need, closed: placed.closed, history: placed.history, constrained: constraints.length, flat: placed.flat || null } : null;
-  return { nBase: cb.n, mode, singular: rosy.singular, sumIndex: rosy.sumIndex, singularG: rosyG.singular, sumIndexG: rosyG.sumIndex,
+  return { nBase: cb.n, mode, singular: rosy.singular, sumIndex: rosy.sumIndex, singularG: rosyG ? rosyG.singular : null, sumIndexG: rosyG ? rosyG.sumIndex : null,
     worstMatch: st.worstMatch, branchBase: st.branch.length, t, ...out, phi: phiF, cones: coneList, coneInfo };
 }

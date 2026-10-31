@@ -185,17 +185,25 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
   }
   for (let i = 0; i < n; i++) { rows.push(i); cols.push(i); vre.push(diag[i]); vim.push(0); }
   const Ar = csrFromCOO(n, rows, cols, vre), Ai = csrFromCOO(n, rows, cols, vim), nR = refl.length / 4;
-  // real embedding: [re; im] → [Ar re − Ai im; Ai re + Ar im] (+ the reflection blocks)
-  const spm = (A, x, off, y, yoff, sign) => { for (let i = 0; i < n; i++) { let s = 0; for (let k = A.indptr[i]; k < A.indptr[i + 1]; k++) s += A.data[k] * x[off + A.indices[k]]; y[yoff + i] += sign * s; } };
   let mTot = 0, dTot = 0; for (let i = 0; i < n; i++) { mTot += m[i]; dTot += diag[i]; }
   const eps = 1e-6 * dTot / mTot;                                                  // tiny shift keeps A positive definite
+  // real embedding: [re; im] → [Ar re − Ai im; Ai re + Ar im] (+ the reflection blocks) + eps M. Ar and Ai come from the
+  // same COO lists, so they share one pattern: one pass reads it once (the four row sums kept apart, as four passes would)
+  const ip = Ar.indptr, ix = Ar.indices, dr = Ar.data, di = Ai.data, em = new Float64Array(n);
+  for (let i = 0; i < n; i++) em[i] = eps * m[i];
   const applyA = (x, out) => {
-    out.fill(0); spm(Ar, x, 0, out, 0, 1); spm(Ai, x, n, out, 0, -1); spm(Ai, x, 0, out, n, 1); spm(Ar, x, n, out, n, 1);
+    for (let i = 0; i < n; i++) {
+      let s1 = 0, s2 = 0, s3 = 0, s4 = 0;
+      for (let k = ip[i], e = ip[i + 1]; k < e; k++) { const j = ix[k], xr = x[j], xi = x[n + j], ar = dr[k], ai = di[k]; s1 += ar * xr; s2 += ai * xi; s3 += ai * xr; s4 += ar * xi; }
+      if (nR) { out[i] = s1 - s2; out[n + i] = s3 + s4; }
+      else { out[i] = s1 - s2 + em[i] * x[i]; out[n + i] = s3 + s4 + em[i] * x[n + i]; }
+    }
+    if (!nR) return;
     for (let k = 0; k < nR; k++) {
       const i = refl[4 * k], j = refl[4 * k + 1], wc = refl[4 * k + 2], ws = refl[4 * k + 3];
       out[i] -= wc * x[j] + ws * x[n + j]; out[n + i] -= ws * x[j] - wc * x[n + j];
     }
-    for (let i = 0; i < n; i++) { out[i] += eps * m[i] * x[i]; out[n + i] += eps * m[i] * x[n + i]; }
+    for (let i = 0; i < n; i++) { out[i] += em[i] * x[i]; out[n + i] += em[i] * x[n + i]; }
   };
   const jac = new Float64Array(2 * n); for (let i = 0; i < n; i++) jac[i] = jac[n + i] = diag[i] + eps * m[i];
   const normalise = (v) => { let s = 0; for (let i = 0; i < n; i++) s += m[i] * (v[i] * v[i] + v[n + i] * v[n + i]); s = Math.sqrt(s); for (let i = 0; i < 2 * n; i++) v[i] /= s; };
@@ -215,13 +223,13 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
   // inverse iteration
   { let s = 12345; const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff - 0.5; }; for (let i = 0; i < 2 * n; i++) z[i] = rnd(); }
   normalise(z);
-  const rhs = new Float64Array(2 * n);
+  const rhs = new Float64Array(2 * n), Az = new Float64Array(2 * n);
   for (let it = 0; it < outer; it++) {
     for (let i = 0; i < n; i++) { rhs[i] = m[i] * z[i]; rhs[n + i] = m[i] * z[n + i]; }
     const res = pcg(applyA, jac, rhs, z, { maxIter: cgMax, tol: cgTol }); iters += res.iters;
     const znew = res.x; normalise(znew);
     // Rayleigh quotient and change
-    const Az = new Float64Array(2 * n); applyA(znew, Az); let num = 0, ch = 0;
+    applyA(znew, Az); let num = 0, ch = 0;
     for (let i = 0; i < 2 * n; i++) { num += znew[i] * Az[i]; ch += (znew[i] - z[i]) ** 2; }
     lam = num; z = znew; if (log) log(`rosy it ${it}: λ = ${lam.toExponential(3)}, Δ = ${Math.sqrt(ch).toExponential(2)}`);
     if (it > 2 && Math.sqrt(ch) < 1e-5) break;
@@ -236,7 +244,14 @@ export function smoothestRoSy(c, { N = 6, Len = null, outer = 20, cgTol = 1e-5, 
   if (mbo && mbo.iters > 0 && !cons.length) {
     const tau = mbo.tau, rhsB = new Float64Array(2 * n), jacB = new Float64Array(2 * n), tmpB = new Float64Array(2 * n);
     for (let i = 0; i < n; i++) jacB[i] = jacB[n + i] = m[i] + tau * (diag[i] + eps * m[i]);
-    const applyB = (x, out) => { applyA(x, tmpB); for (let i = 0; i < n; i++) { out[i] = m[i] * x[i] + tau * tmpB[i]; out[n + i] = m[i] * x[n + i] + tau * tmpB[n + i]; } };
+    const applyB = nR ? (x, out) => { applyA(x, tmpB); for (let i = 0; i < n; i++) { out[i] = m[i] * x[i] + tau * tmpB[i]; out[n + i] = m[i] * x[n + i] + tau * tmpB[n + i]; } }
+      : (x, out) => {                                                         // the same sums as applyA, then M x + τ (A x)
+        for (let i = 0; i < n; i++) {
+          let s1 = 0, s2 = 0, s3 = 0, s4 = 0;
+          for (let k = ip[i], e = ip[i + 1]; k < e; k++) { const j = ix[k], xr = x[j], xi = x[n + j], ar = dr[k], ai = di[k]; s1 += ar * xr; s2 += ai * xi; s3 += ai * xr; s4 += ar * xi; }
+          out[i] = m[i] * x[i] + tau * (s1 - s2 + em[i] * x[i]); out[n + i] = m[i] * x[n + i] + tau * (s3 + s4 + em[i] * x[n + i]);
+        }
+      };
     for (let it = 0; it < mbo.iters; it++) {
       for (let i = 0; i < n; i++) { const r = Math.hypot(z[i], z[n + i]) || 1; rhsB[i] = m[i] * z[i] / r; rhsB[n + i] = m[i] * z[n + i] / r; }
       const res = pcg(applyB, jacB, rhsB, z, { maxIter: cgMax, tol: cgTol }); iters += res.iters; z = res.x;
