@@ -99,6 +99,18 @@
           <button class="btn" id="btn-reimport" type="button" disabled title="run the import again on the last opened file with these options">Remesh again</button>
           <a class="btn" id="btn-lshc" hidden download title="save the imported carrier as .lshc (the format of carriers/; drop it here later to skip the remesh)">Download .lshc</a>
         </div>
+        <div class="subhead">scale</div>
+        <div class="row">
+          <label for="nb-scale" title="centimetres per model unit: × 1 reads the file's units as centimetres, × 0.1 as millimetres; or type one size of the bounding box below and the object is scaled to it. Only the sizes in centimetres follow (the bounding box, the lattice edge a): the carrier and the lattice stay as they are. Kept for the next file.">× model units</label>
+          <input type="number" id="nb-scale" class="num sm" min="0.0001" step="0.1" value="1"><span class="unit">→ cm</span>
+        </div>
+        <div class="row dims">
+          <label title="the bounding box of the carrier in centimetres: type one size and the scale follows (the box itself: Display → bounding box)">size</label>
+          <input type="number" id="nb-w" class="num xs" min="0" step="1" title="width (x) in cm"><span class="unit">×</span>
+          <input type="number" id="nb-d" class="num xs" min="0" step="1" title="depth (y) in cm"><span class="unit">×</span>
+          <input type="number" id="nb-h" class="num xs" min="0" step="1" title="height (z) in cm"><span class="unit">cm</span>
+        </div>
+        <div class="readout" id="ro-scale">—</div>
       </details>
       </div>
     </details>
@@ -260,16 +272,17 @@
       </div>
       <div class="chips" id="chips">
         <button class="chip on" data-layer="field">field</button>
-        <button class="chip" data-layer="wire" title="intrinsic Delaunay triangulation of the carrier">mesh</button>
+        <button class="chip" data-layer="wire" hidden title="intrinsic Delaunay triangulation of the carrier">mesh</button>
         <button class="chip" data-layer="probe" title="the seed's first ring: n sites at distance a">scale a</button>
         <button class="chip on" data-layer="lattice">lattice</button>
-        <button class="chip" data-layer="peaks">peaks</button>
+        <button class="chip" data-layer="peaks" hidden>peaks</button>
         <button class="chip on" data-layer="singular">singular</button>
         <button class="chip on" data-layer="centre">centre</button>
         <button class="chip" data-layer="laths">laths</button>
         <button class="chip" data-layer="orient" title="a thin arrow at each regular site along the local wave vector (30° off the lattice edges); colour = misorientation to the neighbours (grains quiet, seams bright)">orient</button>
         <button class="chip" data-layer="strain" data-tip="tip-strain">strain</button>
-        <button class="chip" data-layer="rosy" title="global mode: the three lattice directions of the smoothest 6-fold field at every carrier vertex">rotation field</button>
+        <button class="chip" data-layer="rosy" hidden title="global mode: the three lattice directions of the smoothest 6-fold field at every carrier vertex">rotation field</button>
+        <button class="chip" data-layer="bbox" title="the bounding box of the carrier with its three sizes in centimetres (1 File → import options → scale)">bounding box</button>
       </div>
       <div class="row" id="row-orient" hidden>
         <label>orient colour</label>
@@ -290,6 +303,11 @@
         <label for="sl-lathw">lath width [a]</label>
         <input type="range" id="sl-lathw" min="0.04" max="0.6" step="0.01" value="0.18">
         <output id="out-lathw" class="mono">0.18</output>
+      </div>
+      <div class="row slider">
+        <label for="sl-latht" title="the thickness of the strips, in lattice edges a: an over strip rides on the strip under it">thickness [a]</label>
+        <input type="range" id="sl-latht" min="0.01" max="0.2" step="0.005" value="0.05">
+        <output id="out-latht" class="mono">0.050</output>
       </div>
       <div class="row">
         <label for="sel-lathcol">laths</label>

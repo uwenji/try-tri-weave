@@ -104,6 +104,9 @@ select, .num, textarea { font: inherit; color: var(--fg); background: var(--pane
 select { max-width: 230px; }
 .num { width: 78px; font-family: var(--font-mono); font-size: 12.5px; }
 .num.sm { width: 64px; }
+.num.xs { width: 56px; padding-left: 4px; padding-right: 2px; }
+.row.dims { flex-wrap: nowrap; gap: 3px; } .row.dims label { margin-right: 4px; }
+.unit { color: var(--dim); font-size: 11.5px; }
 .btn { font: inherit; font-size: 12.5px; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer; text-decoration: none; display: inline-block; }
 .btn:hover { border-color: var(--accent); }
 .btn:focus-visible, .chip:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

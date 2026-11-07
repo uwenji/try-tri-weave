@@ -26,7 +26,8 @@ const S = {
   coneFlat: true,                                           // cones from the curvature: ĝ kept flat on the developable parts (cones.js · developableWeights)
                     // global mode: cones + size field ĝ ('greedy' | 'field' | 'uniform'); the stripesRes the solver's operators were built from
   lat: null, summary: null, strands: null, history: [], lastExtract: -1, extractEvery: 100, shownStep: -1, scrubbed: false,
-  carrierView: 'u', carrierAlpha: 1, stripeAlpha: [1, 1, 1], stripesShown: null, lathW: 0.18, lathCol: 'family', overUnder: true, msg: '',
+  carrierView: 'u', carrierAlpha: 1, stripeAlpha: [1, 1, 1], stripesShown: null, lathW: 0.18, lathT: 0.05, lathCol: 'family', overUnder: true, msg: '',
+  scale: 1,                                                 // centimetres per model unit (1 File → import options → scale)
   theme: 'auto', showValence: {}, selLath: -1, selLathKey: null, selVertex: -1, selVertexKey: -1, armPick: false,
   turntable: false, turnSpeed: 12, projection: 'persp',
   refine: 0, baseCarrier: null, side: 1, cgManual: false,
@@ -379,7 +380,7 @@ function renderHealReadout() {
 
 function updateLaths() {
   if (!view.visible.laths) { view.setLaths(null, null, {}); return; }
-  view.setLaths(S.lat, S.strands, { width: S.lathW * S.a, overUnder: S.overUnder, colouring: S.lathCol, selected: S.selLath });
+  view.setLaths(S.lat, S.strands, { width: S.lathW * S.a, thickness: S.lathT * S.a, overUnder: S.overUnder, colouring: S.lathCol, selected: S.selLath });
 }
 
 // ------------------------------------------------------------------ selection (laths, vertices)
@@ -581,6 +582,24 @@ function updateDensityReadout() {
   setStage('i-density', epa >= 6 && epa <= 12 ? 'ok' : 'warn');
   setSum('density', `a = ${S.a.toFixed(2)} · ≈ ${sites().toFixed(0)} sites${S.refine ? ` · ×${2 ** S.refine}` : ''}`);
   drawDensityDiagram();
+  showScale();                                                                   // a in centimetres
+}
+
+// ------------------------------------------------------------------ scale: centimetres per model unit (as WeaveTogether)
+/** 1 File → import options → scale: the carrier's bounding box and the lattice edge a in centimetres (only the sizes
+ *  in cm follow the scale: the carrier and the lattice stay in model units); the box is Display → bounding box */
+function showScale() {
+  const c = S.carrier; if (!c) return;
+  const size = [0, 1, 2].map(k => c.hi[k] - c.lo[k]), f = +S.scale.toPrecision(4);
+  $('nb-scale').value = f;
+  [['nb-w', 0], ['nb-d', 1], ['nb-h', 2]].forEach(([id, k]) => { $(id).value = +(size[k] * S.scale).toFixed(1); });
+  $('ro-scale').textContent = `lattice edge a = ${(S.a * S.scale).toFixed(2)} cm (${S.a.toFixed(3)} model units × ${f})`;
+  view.setScale(S.scale);
+}
+function setScale(v) {
+  if (!(Number.isFinite(v) && v > 0)) { showScale(); return; }
+  S.scale = v; try { localStorage.setItem('localsh-scale', String(v)); } catch (e) { /* ignore */ }
+  showScale();
 }
 
 function renderRefineChips() {
@@ -1053,13 +1072,14 @@ function chartStepAt(clientX) {
 // ------------------------------------------------------------------ export
 function exportLattice() {
   const lat = S.lat, c = S.carrier; if (!lat) { setStatus('nothing to export yet'); return; }
-  const lines = [`# LocalSH ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${S.solver.steps} steps, r = ${S.r}, b = ${S.b}, sum(6-n) interior = ${S.summary.charge}`];
+  // the header line: a and the scale (1 File → import options), both read by WeaveTogether (weave.js · parseOBJ)
+  const lines = [`# LocalSH ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${S.solver.steps} steps, r = ${S.r}, b = ${S.b}, sum(6-n) interior = ${S.summary.charge}, scale = ${+S.scale.toPrecision(7)} cm/unit`];
   const P = lat.P; for (let i = 0; i < P.length / 3; i++) lines.push(`v ${P[3 * i].toFixed(6)} ${P[3 * i + 1].toFixed(6)} ${P[3 * i + 2].toFixed(6)}`);
   const T = lat.tris; for (let t = 0; t < T.length / 3; t++) lines.push(`f ${T[3 * t] + 1} ${T[3 * t + 1] + 1} ${T[3 * t + 2] + 1}`);
   const sing = S.summary.singular.map(i => `# singular ${i}: valence ${lat.valence[i]} charge ${6 - lat.valence[i]}`);
   const txt = lines.concat(sing).join('\n') + '\n';
   $('modal-title').textContent = `lattice OBJ — ${P.length / 3} vertices, ${T.length / 3} triangles`;
-  $('modal-hint').textContent = 'Copy the text into a .obj file (the dual triangulation of the peaks; singular vertices listed as comments at the end), or use Download where the page allows it.';
+  $('modal-hint').textContent = `Copy the text into a .obj file (the dual triangulation of the peaks; singular vertices listed as comments at the end), or use Download where the page allows it. The first line carries a and the scale (${+S.scale.toPrecision(4)} cm per model unit, 1 File → import options): WeaveTogether opens the lattice at that size.`;
   $('modal-text').value = txt;
   try { const a = $('modal-download'); if (a._url) URL.revokeObjectURL(a._url); a._url = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); a.href = a._url; a.download = `${c.name.replace(/[^A-Za-z0-9_-]+/g, '_')}_v${S.valence}_${P.length / 3}v.obj`; } catch (e) { /* ignore */ }
   $('modal').hidden = false;
@@ -1083,6 +1103,12 @@ function bind() {
   $('sel-imp-up').addEventListener('change', () => { saveImportOpts(); reorientOpened(); });
   $('btn-import-cancel').addEventListener('click', cancelImport);
   $('btn-reimport').addEventListener('click', () => { if (S.importFile) runImport(S.importFile); });
+  // the scale: × model units, or one size of the bounding box in centimetres (the others follow)
+  $('nb-scale').addEventListener('change', (e) => setScale(+e.target.value));
+  [['nb-w', 0], ['nb-d', 1], ['nb-h', 2]].forEach(([id, k]) => $(id).addEventListener('change', (e) => {
+    const c = S.carrier, v = +e.target.value, d = c ? c.hi[k] - c.lo[k] : 0;
+    if (d > 1e-12 && Number.isFinite(v) && v > 0) setScale(v / d); else showScale();
+  }));
   // density
   $('sl-a').addEventListener('input', (e) => { $('nb-a').value = aFromSlider(+e.target.value).toFixed(3); });
   $('sl-a').addEventListener('change', (e) => onDensityChange(aFromSlider(+e.target.value)));
@@ -1140,6 +1166,7 @@ function bind() {
   // view
   for (const chip of document.querySelectorAll('#chips .chip')) chip.addEventListener('click', () => setLayer(chip.dataset.layer, !chip.classList.contains('on')));
   $('sl-lathw').addEventListener('input', (e) => { $('out-lathw').value = (+e.target.value).toFixed(2); S.lathW = +e.target.value; view.setStripeParams({ halfWidth: stripeHalfWidth() }); updateLaths(); updateDensityReadout(); });
+  $('sl-latht').addEventListener('input', (e) => { $('out-latht').value = (+e.target.value).toFixed(3); S.lathT = +e.target.value; updateLaths(); });
   $('sel-lathcol').addEventListener('change', (e) => { S.lathCol = e.target.value; updateLaths(); });
   $('ck-overunder').addEventListener('change', (e) => { S.overUnder = e.target.checked; updateLaths(); });
   $('sel-carrier').addEventListener('change', (e) => { S.carrierView = e.target.value; updateCarrierColors(); if (S.carrierView === 'u') showStep(S.shownStep >= 0 ? S.shownStep : 0); });
@@ -1251,6 +1278,7 @@ function importOpts() {
 }
 function saveImportOpts() { try { localStorage.setItem('localsh-import', JSON.stringify(importOpts())); } catch (e) { /* ignore */ } }
 function loadImportOpts() {
+  try { const v = +localStorage.getItem('localsh-scale'); if (v > 0) S.scale = v; } catch (e) { /* ignore */ }
   try {
     const o = JSON.parse(localStorage.getItem('localsh-import') || 'null'); if (!o) return;
     if (o.edges) $('nb-imp-edges').value = o.edges; if (o.maxVerts) $('nb-imp-max').value = o.maxVerts;

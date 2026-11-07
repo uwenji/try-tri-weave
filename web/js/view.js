@@ -1,7 +1,8 @@
 // three.js view: carrier mesh coloured by the field (with an opacity toward the plain mesh colour) or by the three
 // stripe phases of the global seed, wireframe, lattice edges, peaks, singular vertices as labelled discs (one layer
-// per valence), the centre marker, the selected vertex, and the lath ribbons (Kagome strands) with adjustable width,
-// over/under offset, family colouring and a highlighted (selected) path. Z is up.
+// per valence), the centre marker, the selected vertex, the laths (Kagome strands) as strips with width and thickness,
+// over/under, family colouring and a highlighted (selected) path, and the carrier's bounding box with its sizes in
+// centimetres. Z is up.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mapColors, lutColor, FAMILY_COLORS, STRAND_COLORS, PLAIN_LATH, valenceHex } from './colormap.js';
@@ -38,7 +39,8 @@ export class View {
     this.fill = new THREE.DirectionalLight(0xffffff, 0.9); this.fill.position.set(1.5, 0.8, 0.6); this.scene.add(this.fill);
     this.group = new THREE.Group(); this.scene.add(this.group);
     this.layers = {};                                     // name → Object3D
-    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false, rosy: false, cones: true };
+    this.visible = { field: true, wire: false, probe: false, lattice: true, peaks: false, singular: true, centre: true, laths: false, strain: false, orient: false, rosy: false, cones: true, bbox: false };
+    this.scale = 1;                                       // centimetres per model unit (the bounding-box sizes)
     this.fieldAlpha = 1;                                  // carrier colours: 1 = the colour map, 0 = the plain mesh colour
     this.stripeAlpha = [1, 1, 1]; this.stripeHalfW = 0.65; // stripes: opacity per colour slot, band half-width in radians of phase
     this.carrierMode = 'vertex';                          // 'vertex' (vertex colours) | 'stripes' (per-face phases, shaded per pixel)
@@ -63,6 +65,7 @@ export class View {
     if (this.matField) this.matField.userData.u.uBase.value.copy(cssRaw('--mesh', '#e0e0de'));
     if (this.matStripes) { const u = this.matStripes.userData.u; u.uBase.value.copy(cssRaw('--mesh', '#e0e0de')); STRIPE_TOKENS.forEach(([n, f], k) => u.uFam.value[k].copy(cssLinear(n, f))); }
     this.labelCache.clear();
+    if (this.layers.bbox) this.setBBox();                 // its labels are drawn in the theme's colours
     if (this.nav) this.nav.applyTheme();
   }
 
@@ -163,7 +166,10 @@ export class View {
     if (obj) { obj.visible = !!this.visible[name]; this.group.add(obj); }
   }
 
-  setVisible(name, on) { this.visible[name] = on; if (this.layers[name]) this.layers[name].visible = on; }
+  setVisible(name, on) {
+    this.visible[name] = on; if (this.layers[name]) this.layers[name].visible = on;
+    if (name === 'bbox' && on) this.setBBox();            // built when first shown, and again for a new carrier or scale
+  }
 
   setValenceVisible(v, on) {
     this.showValence[v] = on;
@@ -192,12 +198,49 @@ export class View {
     this.geoField = geo; this.matField = this._fieldMaterial(); this.matStripes = this._stripeMaterial();
     const mesh = new THREE.Mesh(geo, this.matField); mesh.userData.kind = 'carrier'; this._setLayer('field', mesh); this.mesh = mesh;
     this._setLayer('wire', null); this._setLayer('probe', null);
+    this.setBBox();
     if (opts.keepCamera) { const d = c.bbox; for (const cam of [this.persp, this.ortho]) { cam.near = d * 0.01; cam.far = d * 20; cam.updateProjectionMatrix(); } }
     else this.fitCamera();
   }
 
   /** which side of the surface carries the lattice marks and the laths: +1 along the carrier normals, −1 opposite */
   setSide(sign) { this.sideSign = sign < 0 ? -1 : 1; }
+
+  /** centimetres per model unit (1 File → import options → scale): relabels the bounding box */
+  setScale(cmPerUnit) { if (cmPerUnit === this.scale) return; this.scale = cmPerUnit; this.setBBox(); }
+  /** the carrier's bounding box, dashed, with its three sizes in centimetres (Display → bounding box); as WeaveTogether */
+  setBBox() {
+    const c = this.carrier; if (!c || !this.visible.bbox) { this._setLayer('bbox', null); return; }
+    const lo = c.lo, hi = c.hi, d = c.bbox, g = new THREE.Group(), pts = [];
+    const at = (x, y, z) => [x ? hi[0] : lo[0], y ? hi[1] : lo[1], z ? hi[2] : lo[2]];
+    for (const [p, q] of [[[0, 0, 0], [1, 0, 0]], [[0, 1, 0], [1, 1, 0]], [[0, 0, 1], [1, 0, 1]], [[0, 1, 1], [1, 1, 1]], [[0, 0, 0], [0, 1, 0]], [[1, 0, 0], [1, 1, 0]],
+      [[0, 0, 1], [0, 1, 1]], [[1, 0, 1], [1, 1, 1]], [[0, 0, 0], [0, 0, 1]], [[1, 0, 0], [1, 0, 1]], [[0, 1, 0], [0, 1, 1]], [[1, 1, 0], [1, 1, 1]]]) pts.push(...at(...p), ...at(...q));
+    const ge = new THREE.BufferGeometry(); ge.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(pts), 3));
+    const box = new THREE.LineSegments(ge, new THREE.LineDashedMaterial({ color: this.colKnot, dashSize: 0.012 * d, gapSize: 0.008 * d, transparent: true, opacity: 0.85 }));
+    box.computeLineDistances(); g.add(box);
+    const size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], off = 0.035 * d;
+    const cm = (x) => { const v = x * this.scale; return `${v.toFixed(v >= 100 ? 0 : 1)} cm`; };
+    const mid = (x, y, z) => [x === 0.5 ? (lo[0] + hi[0]) / 2 : x ? hi[0] + off : lo[0] - off, y === 0.5 ? (lo[1] + hi[1]) / 2 : y ? hi[1] + off : lo[1] - off, z === 0.5 ? (lo[2] + hi[2]) / 2 : z ? hi[2] + off : lo[2] - off];
+    g.add(this._textSprite(`W ${cm(size[0])}`, mid(0.5, 0, 0), d), this._textSprite(`D ${cm(size[1])}`, mid(1, 0.5, 0), d), this._textSprite(`H ${cm(size[2])}`, mid(1, 0, 0.5), d));
+    g.renderOrder = 6;
+    this._setLayer('bbox', g);
+  }
+  /** a small text label on a rounded panel, as a sprite sized to the model (the bounding-box sizes) */
+  _textSprite(text, p, d) {
+    const key = 'txt|' + text + (this.dark ? '|d' : '');
+    let tex = this.labelCache.get(key);
+    if (!tex) {
+      const W = 256, Hh = 64, cv = document.createElement('canvas'); cv.width = W; cv.height = Hh; const ctx = cv.getContext('2d');
+      ctx.font = `500 30px "IBM Plex Mono", "SFMono-Regular", Menlo, monospace`; const tw = Math.min(W - 16, ctx.measureText(text).width + 24), x0 = (W - tw) / 2;
+      ctx.fillStyle = this.dark ? 'rgba(30,32,34,0.92)' : 'rgba(255,255,255,0.94)'; ctx.beginPath(); ctx.roundRect(x0, 8, tw, Hh - 16, 10); ctx.fill();
+      ctx.strokeStyle = this.dark ? 'rgba(228,229,227,0.5)' : 'rgba(27,29,31,0.4)'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = this.dark ? '#e4e5e3' : '#1b1d1f'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, W / 2, Hh / 2 + 1);
+      tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4; this.labelCache.set(key, tex);
+    }
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false }));
+    sp.position.set(p[0], p[1], p[2]); sp.scale.set(0.16 * d, 0.04 * d, 1); sp.renderOrder = 7;
+    return sp;
+  }
 
   fitCamera() {
     const c = this.carrier; if (!c) return;
@@ -445,14 +488,27 @@ export class View {
     const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; return tex;
   }
 
-  /** lath ribbons. opts: {width, overUnder, colouring: 'family'|'strand'|'plain', selected: strand index or -1} */
+  /** the laths as strips (as WeaveTogether and WeaveSim draw them): a rectangular section, width × thickness, swept
+   *  along a centripetal Catmull-Rom spline through the crossings of the strand (the lattice edge midpoints), so it
+   *  bends smoothly and has no notch at a crossing. Its height over the surface is blended (cosine) between the
+   *  crossings: under, the strip lies on the surface; over, it rides on the strip under it.
+   *  opts: {width, thickness, overUnder, colouring: 'family'|'strand'|'plain', selected: strand index or -1} */
   setLaths(lat, strandsData, opts) {
     const c = this.carrier;
     if (!lat || !strandsData || !strandsData.strands.length) { this._setLayer('laths', null); this._setLayer('path', null); this.lathFaceStrand = null; return; }
     const { edges, strands, family, over: overRaw } = strandsData, pk = lat.peaks, N = c.N, sg = this.sideSign;
     const over = sg > 0 ? overRaw : (si, i) => !overRaw(si, i);            // seen from the other side, over becomes under
-    const w = opts.width, thk = opts.thickness ?? 0.35 * w, lift = 0.45 * c.h, sub = 2, sel = opts.selected ?? -1;
-    const pos = [], nrm = [], col = [], idx = [], faceStrand = [];
+    const w = opts.width, thk = opts.thickness ?? 0.3 * w, hw = w / 2, ht = thk / 2, lift = 0.45 * c.h, sel = opts.selected ?? -1;
+    // sections per segment between two crossings: 4, or 2 on very large lattices (the geometry is built in one go)
+    let nv = 0, nt = 0, nKnots = 0; for (const s of strands) if (s.knots.length >= 2) nKnots += s.knots.length;
+    const SUB = nKnots > 60000 ? 2 : 4;
+    for (const s of strands) {
+      const K = s.knots.length; if (K < 2) continue;
+      const M = s.closed ? K * SUB : (K - 1) * SUB + 1;
+      nv += 8 * M + (s.closed ? 0 : 8); nt += 8 * (s.closed ? M : M - 1) + (s.closed ? 0 : 4);
+    }
+    const pos = new Float32Array(3 * nv), nrm = new Float32Array(3 * nv), col = new Float32Array(3 * nv), idx = new Uint32Array(3 * nt), faceStrand = new Int32Array(nt);
+    let vi = 0, ti = 0;
     const dim = [this.colCanvas.r, this.colCanvas.g, this.colCanvas.b];
     const edgeMid = (e) => {
       const [a, b] = edges[e], va = pk[a], vb = pk[b];
@@ -460,52 +516,69 @@ export class View {
       let n = [N[3 * va] + N[3 * vb], N[3 * va + 1] + N[3 * vb + 1], N[3 * va + 2] + N[3 * vb + 2]]; const l = Math.hypot(...n) || 1; n = n.map(v => sg * v / l);
       return { m, n };
     };
-    let selChain = null, selClosed = false;
+    let selPath = null, selClosed = false;
     strands.forEach((s, si) => {
       const K = s.knots.length; if (K < 2) return;
-      const nodes = s.knots.map(edgeMid);
-      const chain = [];
-      const nseg = s.closed ? K : K - 1;
-      for (let i = 0; i < nseg; i++) {
-        const a = nodes[i], b = nodes[(i + 1) % K];
-        const offA = lift + (opts.overUnder ? (over(si, i) ? thk : 0) : thk / 2);
-        chain.push({ m: a.m, n: a.n, off: offA });
-        for (let k = 1; k < sub; k++) { const t = k / sub; chain.push({ m: lerp3(a.m, b.m, t), n: nrm3(lerp3(a.n, b.n, t)), off: lift + thk / 2 }); }
+      const nodes = s.knots.map(edgeMid), closed = s.closed, nseg = closed ? K : K - 1;
+      const H = s.knots.map((_, i) => lift + (opts.overUnder && over(si, i) ? 1.5 : 0.5) * thk);   // centre height at each crossing
+      const at = (i) => {                                                      // knot i; an open end is mirrored for the spline
+        if (closed) return nodes[((i % K) + K) % K].m;
+        if (i < 0) return nodes[0].m.map((v, k) => 2 * v - nodes[1].m[k]);
+        if (i >= K) return nodes[K - 1].m.map((v, k) => 2 * v - nodes[K - 2].m[k]);
+        return nodes[i].m;
+      };
+      const P = [], Nn = [];                                                   // the centreline and the surface normal along it
+      for (let j = 0; j < nseg; j++) {
+        const j1 = (j + 1) % K, P0 = at(j - 1), P1 = at(j), P2 = at(j + 1), P3 = at(j + 2);
+        for (let q = 0; q < SUB; q++) {
+          const u = q / SUB, p = catmullRom(P0, P1, P2, P3, u), n = nrm3(lerp3(nodes[j].n, nodes[j1].n, u)), h = H[j] + (H[j1] - H[j]) * (1 - Math.cos(Math.PI * u)) / 2;
+          P.push([p[0] + h * n[0], p[1] + h * n[1], p[2] + h * n[2]]); Nn.push(n);
+        }
       }
-      if (!s.closed) { const last = nodes[K - 1]; chain.push({ m: last.m, n: last.n, off: lift + (opts.overUnder ? (over(si, K - 1) ? thk : 0) : thk / 2) }); }
-      const M = chain.length, base0 = pos.length / 3;
+      if (!closed) { const L = nodes[K - 1], h = H[K - 1]; P.push([L.m[0] + h * L.n[0], L.m[1] + h * L.n[1], L.m[2] + h * L.n[2]]); Nn.push(L.n); }
+      const M = P.length, base0 = vi;
       let rgb = opts.colouring === 'plain' ? PLAIN_LATH : opts.colouring === 'strand' ? STRAND_COLORS[si % STRAND_COLORS.length] : FAMILY_COLORS[family[si] >= 0 ? family[si] % 3 : 3];
       if (this.dark) rgb = rgb.map(v => 0.82 * v + 0.18);                        // lift a little on a dark canvas
       if (sel >= 0 && si !== sel) rgb = rgb.map((v, k) => 0.42 * v + 0.58 * dim[k]); // dim everything but the selected path
-      if (si === sel) { selChain = chain; selClosed = s.closed; }
-      for (let i = 0; i < M; i++) {
-        const prev = chain[(i - 1 + M) % M], next = chain[(i + 1) % M];
-        const tp = s.closed ? next.m.map((v, k) => v - prev.m[k]) : (i === 0 ? next.m.map((v, k) => v - chain[i].m[k]) : i === M - 1 ? chain[i].m.map((v, k) => v - prev.m[k]) : next.m.map((v, k) => v - prev.m[k]));
-        const t = nrm3(tp), n = chain[i].n, b = nrm3(cross3(n, t));
-        const cm = chain[i].m.map((v, k) => v + chain[i].off * n[k]);
-        for (const sgn of [-1, 1]) { pos.push(cm[0] + sgn * 0.5 * w * b[0], cm[1] + sgn * 0.5 * w * b[1], cm[2] + sgn * 0.5 * w * b[2]); nrm.push(n[0], n[1], n[2]); col.push(rgb[0], rgb[1], rgb[2]); }
+      const put = (p, sb, su, b, up, n) => {                                   // one vertex: centre p + sb·w/2·b + su·t/2·up, normal n
+        for (let k = 0; k < 3; k++) { pos[3 * vi + k] = p[k] + sb * hw * b[k] + su * ht * up[k]; nrm[3 * vi + k] = n[k]; col[3 * vi + k] = rgb[k]; }
+        vi++;
+      };
+      const tri = (a, b, d) => { idx[3 * ti] = a; idx[3 * ti + 1] = b; idx[3 * ti + 2] = d; faceStrand[ti++] = si; };
+      const T = [], B = [], U = [];                                            // per section: tangent, across, up (⟂ the tangent)
+      for (let k = 0; k < M; k++) {
+        const kp = closed ? (k - 1 + M) % M : Math.max(0, k - 1), kn = closed ? (k + 1) % M : Math.min(M - 1, k + 1);
+        const t = nrm3([P[kn][0] - P[kp][0], P[kn][1] - P[kp][1], P[kn][2] - P[kp][2]]), b = nrm3(cross3(Nn[k], t)), up = cross3(t, b);
+        const nb = [-b[0], -b[1], -b[2]], nu = [-up[0], -up[1], -up[2]], p = P[k];
+        T.push(t); B.push(b); U.push(up);
+        // 8 vertices per section, two per corner (one for each face it bounds): top, side +b, bottom, side −b
+        put(p, -1, 1, b, up, up); put(p, 1, 1, b, up, up); put(p, 1, 1, b, up, b); put(p, 1, -1, b, up, b);
+        put(p, 1, -1, b, up, nu); put(p, -1, -1, b, up, nu); put(p, -1, -1, b, up, nb); put(p, -1, 1, b, up, nb);
       }
-      const segsN = s.closed ? M : M - 1;
-      for (let i = 0; i < segsN; i++) {
-        const a0 = base0 + 2 * i, a1 = base0 + 2 * ((i + 1) % M);
-        idx.push(a0, a0 + 1, a1, a0 + 1, a1 + 1, a1); faceStrand.push(si, si);
+      for (let k = 0, nq = closed ? M : M - 1; k < nq; k++) {
+        const A = base0 + 8 * k, Bq = base0 + 8 * ((k + 1) % M);
+        for (let f = 0; f < 8; f += 2) { tri(A + f, Bq + f, A + f + 1); tri(A + f + 1, Bq + f, Bq + f + 1); }   // outward: t × (corner f → f + 1)
       }
+      if (!closed) for (const [k, sgn] of [[0, -1], [M - 1, 1]]) {           // the two ends of an open strand
+        const n = T[k].map(v => sgn * v), v0 = vi;
+        for (const [sb, su] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) put(P[k], sb, su, B[k], U[k], n);
+        if (sgn > 0) { tri(v0, v0 + 1, v0 + 2); tri(v0, v0 + 2, v0 + 3); } else { tri(v0, v0 + 2, v0 + 1); tri(v0, v0 + 3, v0 + 2); }
+      }
+      if (si === sel) { selPath = P.map((p, k) => new THREE.Vector3(p[0] + ht * U[k][0], p[1] + ht * U[k][1], p[2] + ht * U[k][2])); selClosed = closed; }
     });
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(pos), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(Float32Array.from(nrm), 3));
-    g.setAttribute('color', new THREE.BufferAttribute(Float32Array.from(col), 3));
-    g.setIndex(idx);
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0, side: THREE.DoubleSide });
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(g, mat); mesh.userData.kind = 'lath';
-    this.lathFaceStrand = Int32Array.from(faceStrand);
+    this.lathFaceStrand = faceStrand;
     this._setLayer('laths', mesh);
-    // highlighted path: a tube along the selected strand's centreline, in the foreground colour
-    if (selChain) {
-      const pts = selChain.map(q => new THREE.Vector3(q.m[0] + (q.off + 0.35 * thk) * q.n[0], q.m[1] + (q.off + 0.35 * thk) * q.n[1], q.m[2] + (q.off + 0.35 * thk) * q.n[2]));
-      const curve = new THREE.CatmullRomCurve3(pts, selClosed, 'centripetal', 0.5);
-      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(16, pts.length * 4), 0.11 * Math.max(w, c.h), 6, selClosed),
-        new THREE.MeshBasicMaterial({ color: this.colFg }));
+    // highlighted path: a tube along the top of the selected strip, in the foreground colour
+    if (selPath) {
+      const curve = new THREE.CatmullRomCurve3(selPath, selClosed, 'centripetal', 0.5);
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(16, 2 * selPath.length), 0.11 * Math.max(w, c.h), 6, selClosed), new THREE.MeshBasicMaterial({ color: this.colFg }));
       tube.renderOrder = 4; this.visible.path = true; this._setLayer('path', tube);
     } else this._setLayer('path', null);
   }
@@ -625,5 +698,16 @@ function slerp(a, b, t) {
 }
 function disposeObject(o) { o.traverse?.(x => { x.geometry?.dispose?.(); if (x.material) (Array.isArray(x.material) ? x.material : [x.material]).forEach(m => m.dispose?.()); }); }
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+/** the point at u ∈ [0, 1] of the centripetal (α = ½) Catmull-Rom segment from P1 to P2 (Barry–Goldman); linear where
+ *  two points coincide */
+function catmullRom(P0, P1, P2, P3, u) {
+  const knot = (p, q, t) => t + Math.sqrt(Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]));
+  const t0 = 0, t1 = knot(P0, P1, t0), t2 = knot(P1, P2, t1), t3 = knot(P2, P3, t2);
+  if (t1 - t0 < 1e-12 || t2 - t1 < 1e-12 || t3 - t2 < 1e-12) return lerp3(P1, P2, u);
+  const t = t1 + u * (t2 - t1), mix = (a, b, wa, wb) => [a[0] * wa + b[0] * wb, a[1] * wa + b[1] * wb, a[2] * wa + b[2] * wb];
+  const A1 = mix(P0, P1, (t1 - t) / (t1 - t0), (t - t0) / (t1 - t0)), A2 = mix(P1, P2, (t2 - t) / (t2 - t1), (t - t1) / (t2 - t1)), A3 = mix(P2, P3, (t3 - t) / (t3 - t2), (t - t2) / (t3 - t2));
+  const B1 = mix(A1, A2, (t2 - t) / (t2 - t0), (t - t0) / (t2 - t0)), B2 = mix(A2, A3, (t3 - t) / (t3 - t1), (t - t1) / (t3 - t1));
+  return mix(B1, B2, (t2 - t) / (t2 - t1), (t - t1) / (t2 - t1));
+}
 const nrm3 = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];

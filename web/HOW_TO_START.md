@@ -48,10 +48,11 @@ and accept the certificate warning on the device the first time.
    always in reach: drag `steps` (up to 20 000) left to scrub back in time, right to compute further; `Run` keeps
    going, `+500` adds a batch, `Re-seed` (`Export lattice` is in `1 File`); `max steps` and `per frame` below them. Section 4
    holds the pattern parameters: `r`, `b`, `dt` change the equation without resetting the field.
-5. **Display** (the sidebar beside the view) — `theme` auto / light / dark. Chips toggle layers: `field · mesh · lattice ·
-   peaks · singular · centre · laths`; the `singular` row has one chip per valence present (v3, v5, v7 …, with counts) so
-   each kind of singularity can be shown or hidden on its own. Singular vertices are drawn as discs with the valence
-   digit inside. Turn **laths** on and move `lath width [a]`; set `carrier shows` to *plain* to see the weave alone.
+5. **Display** (the sidebar beside the view) — `theme` auto / light / dark. Chips toggle layers: `field · scale a ·
+   lattice · singular · centre · laths · orient · strain · bounding box`; the `singular` row has one chip per valence
+   present (v3, v5, v7 …, with counts) so each kind of singularity can be shown or hidden on its own. Singular vertices
+   are drawn as discs with the valence digit inside. Turn **laths** on and move `lath width [a]` and `thickness [a]`;
+   set `carrier shows` to *plain* to see the weave alone.
    `input normal` flips the side of the surface that carries the laths and marks (a branching tube has no side that
    is outside everywhere). The **growth chart** at the top of the left bar plots peaks · interior · singular against
    the step; the chevron folds it, and clicking or dragging on it scrubs the shown step; the solver controls sit right
@@ -85,6 +86,20 @@ What "ideal" looks like: exactly one singular peak and Σ(6−n) = round(Ω/60°
   says what was found, healed and pinned. `pin what will not hold` keeps the single 5 where the field would re-form the pair
   (held after every batch of steps; `Clear pins` releases). Click again after more steps: new pairs may have
   formed. Bunny ×2: 67 → 59, goose ×2: 65 → 57 in a few seconds on the GPU.
+
+## Size, strips and the display chips (2026-11-08, after WeaveTogether)
+
+* **Scale** — `1 File → import options → scale`: `× model units → cm` (× 1 reads the file's units as centimetres,
+  × 0.1 as millimetres), or type one size of the bounding box (`size` W × D × H, cm) and the factor follows. The
+  read-out gives the lattice edge a in centimetres. Only the sizes in cm follow: the carrier, the lattice and the
+  export stay in model units. The factor is kept for the next file. `Export lattice` writes it on the first line of
+  the OBJ (`scale = … cm/unit`); WeaveTogether reads it and opens the lattice at that size.
+* **Bounding box** — a chip in Display: the carrier's box, dashed, with W / D / H in centimetres.
+* **Laths as strips** — width × thickness swept along a smooth spline through the crossings (as WeaveTogether and
+  WeaveSim draw them): under, a strip lies on the surface; over, it rides on the strip under it. `thickness [a]`
+  sits under `lath width [a]` in Display; `over / under` off lays every strip on the surface.
+* The `mesh`, `peaks` and `rotation field` chips are hidden (the layers are still in the code: remove `hidden` from
+  their buttons in `index.html` to bring them back).
 
 ## Speed: WebAssembly and solver threads (2026-10-31)
 
