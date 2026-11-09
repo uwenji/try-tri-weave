@@ -44,7 +44,7 @@
       <canvas id="chart" width="360" height="118" title="click or drag to scrub the shown step · solid = tracked, dashed = predicted (ideal front, flat-lattice speed)"></canvas>
       <div class="row slider" id="row-steps">
         <label for="sl-steps">steps</label>
-        <input type="range" id="sl-steps" min="0" max="20000" step="10" value="3000">
+        <input type="range" id="sl-steps" min="0" max="15000" step="10" value="3000">
         <output id="out-steps" class="mono">3000</output>
       </div>
       <div class="row buttons" id="row-solve">
@@ -54,7 +54,7 @@
         
       </div>
       <div class="row" id="row-limits">
-        <label for="nb-max" class="dim">max steps</label><input type="number" id="nb-max" class="num short" min="500" step="500" value="20000" title="the end of the steps slider and of Run">
+        <label for="nb-max" class="dim">max steps</label><input type="number" id="nb-max" class="num short" min="500" step="500" value="15000" title="the end of the steps slider and of Run">
         <label for="nb-spf" class="dim">per frame</label><input type="number" id="nb-spf" class="num short" min="1" max="200" value="25" title="steps per frame: the largest batch between two read-outs">
       </div>
     </div>

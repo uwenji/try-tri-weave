@@ -249,7 +249,8 @@ details.sub .row label { font-size: 12.5px; }
 @media (max-width: 820px) {
   :root { --panel-w: 100%; }
   body { overflow: auto; }
-  #app, #app.display-left, #app.setup-right, #app.setup-right.display-left { height: auto; min-height: 100%; grid-template-columns: 1fr; grid-template-rows: var(--top-h) 58vh auto auto; grid-template-areas: "status" "view" "display" "panel"; }
+  #app, #app.display-left, #app.setup-right, #app.setup-right.display-left { height: auto; min-height: 100%; grid-template-columns: 1fr; grid-template-rows: var(--top-h) minmax(58vh, 1fr) auto auto; grid-template-areas: "status" "view" "display" "panel"; }
+  #viewport { contain: size; }                              /* the canvas must not size its row: the view takes what the folded panels leave */
   #setup-dock, .resizer, .mini-btn, #app.setup-closed .mini-btn { display: none; }
   #app.setup-closed #setup-head { flex-direction: row; height: auto; }
   #app.setup-closed #setup-toggle { flex: 1; flex-direction: row; padding: 10px 12px 9px; }

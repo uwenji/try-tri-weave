@@ -20,7 +20,7 @@ const U_RANGE = [-0.45, 1.25];
 const S = {
   manifest: [], carrier: null, solver: null, device: null,
   a: 2, valence: 6, centre: -1, centreMode: 'detected', detected: null,
-  target: 3000, maxSteps: 20000, spf: 25, cgIters: 12, playing: false, busy: false,
+  target: 10000, maxSteps: 15000, spf: 25, cgIters: 12, playing: false, busy: false,
   r: -0.08, b: 1.2, dt: 0.1, seedKind: 'wave', seedR: 2.0, seedPhi: 0, disp: true, seedMode: 'local', rosy: null, stripesRes: null, globalReq: 0,
   coneMode: 'greedy', solverGhat: null, mbo: true,          // mbo: the global field relaxed to unit length (its singularities on the curvature)
   coneFlat: true,                                           // cones from the curvature: ĝ kept flat on the developable parts (cones.js · developableWeights)
