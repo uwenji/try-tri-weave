@@ -251,7 +251,10 @@ details.sub .row label { font-size: 12.5px; }
   body { overflow: auto; }
   #app, #app.display-left, #app.setup-right, #app.setup-right.display-left { height: auto; min-height: 100%; grid-template-columns: 1fr; grid-template-rows: var(--top-h) minmax(58vh, 1fr) auto auto; grid-template-areas: "status" "view" "display" "panel"; }
   #viewport { contain: size; }                              /* the canvas must not size its row: the view takes what the folded panels leave */
-  #setup-dock, .resizer, .mini-btn, #app.setup-closed .mini-btn { display: none; }
+  #setup-dock, .resizer { display: none; }
+  /* folded, the Setup bar keeps Run / Pause and Re-seed at its right end (touch-sized) */
+  #app.setup-closed .mini-btn { display: grid; order: 0; width: 28px; height: 28px; margin: 0 10px 0 0; }
+  #app.setup-closed .mini-btn svg { width: 12px; height: 12px; }
   #app.setup-closed #setup-head { flex-direction: row; height: auto; }
   #app.setup-closed #setup-toggle { flex: 1; flex-direction: row; padding: 10px 12px 9px; }
   #app.setup-closed #setup-toggle .t { writing-mode: horizontal-tb; transform: none; }
