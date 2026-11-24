@@ -12,6 +12,8 @@ import { frontState, predictGrowth, rDie, rGrow, speedColumn, dtFactor } from '.
 import { FRONT } from './frontspeed_table.js';
 import { directionsFromNb0 } from './rosy.js';
 import { healPass, glidePass, climbPass, applyPins, findMotifs } from './heal.js';
+import { freeze, relax, reset, movable, lathBend, lineBend, shape } from './smooth.js';
+import { flipEdge, collapseEdge, splitEdge, healCluster, healAll, toRim, patchSite, patchRim, snapshot, restore, nearestEdge, nearestSite, isRimSite } from './latedit.js';
 
 const SQ3 = Math.sqrt(3);
 const $ = (id) => document.getElementById(id);
@@ -32,6 +34,9 @@ const S = {
   turntable: false, turnSpeed: 12, projection: 'persp',
   refine: 0, baseCarrier: null, side: 1, cgManual: false,
   pins: [], healing: false, healReport: null,              // heal.js: sites held in the field after every batch of steps, and the last pass's report
+  frozen: null,                                            // smooth.js: the lattice taken out of the field — S.lat is it while it exists, and the solver is locked
+  smooth: { sweeps: 20, mu: 0.3, holdRim: false, holdSing: false, ms: 0 },   // its smoothing: sweeps, weight of the edge-length springs (0.3, or 0: keep edge lengths off), what is held
+  tool: null, undo: [], unfreezeArmed: 0,                  // latedit.js: what a click on the frozen lattice does (heal · flip · collapse · split · patch), the lattices before each edit
   strainFam: -1, strainRange: 0.15, es: null, orient: null, orientMode: 'mis',
   geo: null, pred: null,                                   // geodesic distances from the centre / to the rim, and the growth prediction
 };
@@ -69,6 +74,7 @@ async function loadCarrierByName(name) {
 
 /** opts.refine: the same surface at another resolution — keep the camera, the centre and the selection */
 function setCarrier(c, aDefault, opts = {}) {
+  const hadFrozen = dropFrozen();                                               // a frozen lattice goes with the surface it was on
   S.carrier = c; S.baseCarrier = c.base || c; S.refine = c.level || 0; S.rosy = null; S.stripesRes = null; S.stripesShown = null;
   S.playing = false; syncRun(); S.lat = null; S.summary = null; S.strands = null; S.history = []; S.lastExtract = -1;
   S.extractEvery = 100 * Math.max(1, Math.round(c.n / 12000));              // the read-out is O(n log n): less often on fine carriers
@@ -88,10 +94,10 @@ function setCarrier(c, aDefault, opts = {}) {
     (q.remesh ? ` · ${q.remesh}` : '');
   const notes = (q.notes || []); $('ro-notes').hidden = !notes.length; $('ro-notes').textContent = notes.join('; ');
   setStage('i-file', notes.length ? 'warn' : 'ok');
-  $('st-mesh').textContent = `${c.name} · ${c.n} v · ${c.F.length / 3} f · χ = ${c.chi} · ∫K = ${(c.omega * 180 / Math.PI).toFixed(0)}°`;
+  $('st-mesh').textContent = c.name; $('st-mesh').title = `carrier: ${c.n} v · ${c.F.length / 3} f · χ = ${c.chi} · ∫K = ${(c.omega * 180 / Math.PI).toFixed(0)}°`;   // the top bar: the file name, then the lattice (updateTopBar)
   setSum('surface', `${c.name} · ${c.n} v`);
   updateDensityReadout(); updateCarrierColors();
-  setStatus(`carrier ready`);
+  setStatus(hadFrozen ? 'carrier ready · the frozen lattice went with the surface before' : 'carrier ready');
 }
 
 function detect() {
@@ -121,16 +127,23 @@ function newSolver(reseed, ghatRes = null) {
   if (ghatRes && ghatRes.phi && ghatRes.carrier === c) { if (!ghatRes.ops) ghatRes.ops = c.conformalOps(ghatRes.phi, ghatRes.a); ops = ghatRes.ops; S.solverGhat = ghatRes; }
   try { S.solver = S.device ? new GpuSolver(S.device, ops, opts) : new CpuSolver(ops, opts); }
   catch (e) { console.warn('GPU solver failed, using CPU', e); S.device = null; S.solver = new CpuSolver(ops, opts); }
-  $('st-backend').textContent = S.solver.backend === 'webgpu' ? `WebGPU${S.device.info?.architecture ? ' · ' + S.device.info.architecture : ''}` : 'CPU (JS)';
-  $('st-backend').classList.toggle('gpu', S.solver.backend === 'webgpu');
+  $('st-brand').title = 'solver: ' + (S.solver.backend === 'webgpu' ? `WebGPU${S.device.info?.architecture ? ' · ' + S.device.info.architecture : ''}` : 'CPU (JS)');   // off the top bar since 24 Nov: on hover
   if (reseed) reseedNow();
 }
 
 function reseedNow() {
   const c = S.carrier; if (!c || !S.solver) return;
+  dropFrozen();                                                                 // a new seed is a new lattice
   if (S.seedMode === 'global') { globalField({ applySeed: true }); return; }
   if (S.solverGhat) newSolver(false);                                           // local seed: back to the model metric
   const u0 = c.seedField(S.centre, S.valence, S.a, { radius: S.seedR, kind: S.seedKind, phaseDeg: S.seedPhi });
+  let bad = 0; for (let i = 0; i < u0.length; i++) if (!Number.isFinite(u0[i])) bad++;
+  S.seedFailed = bad > 0;
+  if (bad) {                                                                    // never hand the solver a field that is not a number: it would run on, black
+    S.playing = false; syncRun(); S.target = S.solver.steps; syncStepsUI();
+    setStatus(`no seed at vertex ${S.centre}: its chart is not finite at ${bad} of ${u0.length} vertices — pick another centre (the field was left as it is)`); setStage('i-growth', 'bad');
+    return;
+  }
   S.solver.setInitial(u0);
   afterReseed(`v${S.valence} at ${S.centre} (${S.centreMode})`);
 }
@@ -166,7 +179,7 @@ async function globalField({ applySeed = true, force = false } = {}) {
   if (!force && R0 && R0.carrier === c && R0.a === a && R0.mode === mode && R0.editsKey === editsKey && R0.mbo === S.mbo && R0.flat === S.coneFlat) { if (applySeed) applyGlobalSeed(R0); return; }
   if (S.globalBusy && !applySeed) return;                                       // a display request while one is running: the result will come
   const req = ++S.globalReq; S.globalBusy = true;
-  if (applySeed) { S.seedPending = true; $('btn-rosy').disabled = true; }
+  if (applySeed) { dropFrozen(); S.seedPending = true; $('btn-rosy').disabled = true; }
   const base = c.base || c, progress = (stage) => { setStatus(stage); try { if (S.solver) showStep(S.solver.steps); } catch (e) { /* ignore */ } };
   progress('starting the rotation-field worker…');
   try {
@@ -209,7 +222,7 @@ const cen = (A, ids) => [0, 1, 2].map(k => (A[3 * ids[0] + k] + A[3 * ids[1] + k
 function coneEditsArray() { return []; }
 
 function afterReseed(sum) {
-  S.pins = []; S.healReport = null; renderHealReadout();
+  dropFrozen(); S.pins = []; S.healReport = null; S.healLog = []; renderHealReadout();
   S.history = []; S.lastExtract = -1; S.lat = null; S.summary = null; S.strands = null; S.es = null; S.orient = null; S.shownStep = -1; S.scrubbed = false;
   view.setLattice(null, null); view.setLaths(null, null, {}); view.setStrain(null); view.setOrientation(null); clearSelection(false); updateDirectionReadout();
   setSum('sing', sum);
@@ -228,7 +241,7 @@ async function pump() {
   if (S.pumping) return; S.pumping = true;
   try {
     while (S.solver && S.solver.steps < S.target) {
-      if (S.seedPending || S.healing) break;                                  // the global seed is still being solved / a heal pass is stepping: nothing to step here
+      if (S.seedPending || S.healing || S.frozen || S.freezing) break;        // the global seed is still being solved / a heal pass is stepping / the lattice is frozen: nothing to step here
       const s = S.solver, t0 = performance.now(), n = Math.min(S.spfAuto || S.spf, S.target - s.steps);
       try { await s.step(n); } catch (e) {
         if (s !== S.solver) { await yieldTask(); continue; }                   // the solver was replaced under this step (new carrier, new seed): carry on with the new one
@@ -260,17 +273,18 @@ function tick() {
 
 function showStep(step) {
   const s = S.solver; if (!s) return;
+  if (S.frozen && step !== S.frozen.step) return;                               // a frozen lattice keeps its step on screen
   const u = s.stateAt(step); if (!u) return;
   S.shownStep = step;
   if (S.carrierView === 'u') view.setFieldColors(u, 'viridis', U_RANGE[0], U_RANGE[1]);
   if (step < s.steps) { extract(u, false); S.scrubbed = true; }               // scrubbing back: lattice of that snapshot
   else if (S.scrubbed) { extract(s.u, false); S.scrubbed = false; }           // back at the live state (periodic extraction otherwise)
-  $('st-run').textContent = (S.seedPending ? '· waiting for the global seed ' : '') + `· step ${step} / ${s.steps} (t = ${s.t.toFixed(0)}) · ${S.seedMode === 'global' ? (S.solverGhat ? 'global seed in ĝ' : 'global seed') : `v${S.valence} seed`} · a = ${S.a.toFixed(3)}` + (S.playing || s.steps < S.target ? ' · running' : '');
   updateGrowthLegend(); drawChart();
 }
 
 function extract(u, record) {
   const c = S.carrier, s = S.solver; if (!c) return;
+  if (S.frozen) return;                                                         // the frozen lattice is not read again (Unfreeze, a new seed or a new surface end it)
   try { S.lat = extractLattice(c, u, S.a); } catch (e) { console.error(e); S.lat = null; }
   S.summary = chargeSummary(S.lat);
   S.strands = S.lat && S.lat.tris.length ? traceStrands(S.lat.peaks.length, S.lat.tris) : null;
@@ -316,33 +330,196 @@ function updateDirectionReadout() {
 }
 
 // ------------------------------------------------------------------ healing bound 5–7 pairs (heal.js)
-async function healNow() {
-  const s = S.solver, c = S.carrier; if (!s || !c || S.healing || S.seedPending) return;
-  S.healing = true; S.playing = false; syncRun(); $('btn-heal').disabled = true;
+/** which: 'all' (Heal pairs: the motifs, then the passes ticked beside it) | 'motifs' | 'glide' | 'climb' (one pass alone) */
+async function healNow(which = 'all') {
+  const s = S.solver, c = S.carrier; if (!s || !c || S.healing || S.seedPending || S.freezing || lockedHint()) return;
+  S.healing = true; S.playing = false; syncRun(); syncHealButtons();
   while (S.pumping) await yieldTask();                                          // let the running batch finish
-  const el = $('ro-heal'), lines = []; let shown = 0;
-  setStage('i-heal', 'warn');
-  const log = (m) => { lines.push(m); el.textContent = lines.slice(-4).join(' · '); setStatus('healing: ' + m); console.log('[heal] ' + m); };
+  const lines = []; let shown = 0;
+  const log = (m) => { lines.push(m); setStatus('healing: ' + m); console.log('[heal] ' + m); };
   const onStep = async (sv) => { if (S.pins.length) applyPins(sv, S.pins); if (sv.steps - shown >= 100) { shown = sv.steps; if (S.carrierView === 'u') view.setFieldColors(sv.u, 'viridis', U_RANGE[0], U_RANGE[1]); } await yieldTask(); };
+  const all = which === 'all', pin = $('ck-heal-pin').checked, rep = { which, motifs: {}, tried: 0, healed: 0, pinned: 0, results: [] };
+  // the bound motifs, taken apart one at a time; the counts add up over the passes of one run
+  const motifs = async (max) => {
+    const r = await healPass(s, c, S.a, { hold: 60, every: 5, release: 400, max, push: 0.4, pin, pins: S.pins, log, onStep });
+    rep.healed += r.healed; rep.tried += r.tried; rep.pinned += r.pinned; if (r.results) rep.results.push(...r.results);
+    for (const [k, v] of Object.entries(r.motifs)) rep.motifs[k] = (rep.motifs[k] || 0) + v;
+  };
   try {
-    const pin = $('ck-heal-pin').checked, rep = await healPass(s, c, S.a, { hold: 60, every: 5, release: 400, max: 40, push: 0.4, pin, pins: S.pins, log, onStep });
-    if ($('ck-heal-glide').checked && s === S.solver) {
+    if (all || which === 'motifs') await motifs(40);
+    if ((all ? $('ck-heal-glide').checked : which === 'glide') && s === S.solver) {
       // free 5–7 pairs: carried flip by flip to an anti-pair, a lone 5 / 7 or the rim, then the motifs that formed are taken apart
       rep.glide = await glidePass(s, c, S.a, { hold: 60, every: 5, release: 150, settle: 300, pin, pins: S.pins, log: (m) => log('glide: ' + m), onStep });
-      const again = await healPass(s, c, S.a, { hold: 60, every: 5, release: 400, max: 20, push: 0.4, pin, pins: S.pins, log, onStep });
-      rep.healed += again.healed; rep.tried += again.tried; rep.pinned += again.pinned; for (const [k, v] of Object.entries(again.motifs)) rep.motifs[k] = (rep.motifs[k] || 0) + v;
+      await motifs(20);
     }
-    if ($('ck-heal-climb').checked && s === S.solver) {
+    if ((all ? $('ck-heal-climb').checked : which === 'climb') && s === S.solver) {
       // lone 5s / 7s on flat ground walked one site at a time to where the surface holds their curvature
       rep.climb = await climbPass(s, c, S.a, { hold: 60, every: 5, release: 400, pin, pins: S.pins, log: (m) => log('climb: ' + m), onStep });
     }
     S.healReport = rep;
   } catch (e) { console.error(e); setStatus('heal error: ' + e.message); S.healError = e.message; }
-  S.healing = false; $('btn-heal').disabled = false;
+  S.healing = false; S.healLog = lines; syncHealButtons();
   if (s === S.solver) { S.target = Math.max(S.target, s.steps); if (S.target > S.maxSteps) { S.maxSteps = S.target; $('nb-max').value = S.maxSteps; $('sl-steps').max = S.maxSteps; } syncStepsUI(); extract(s.u, true); showStep(s.steps); }
-  renderHealReadout();
+  renderHealReadout(true);
 }
-function clearPins() { S.pins = []; renderHealReadout(); }
+/** the heal buttons wait while a pass runs; Freeze waits for a lattice and for the passes */
+function syncHealButtons() { for (const id of ['btn-heal', 'btn-heal-motifs', 'btn-heal-glide', 'btn-heal-climb']) $(id).disabled = S.healing; $('btn-freeze').disabled = !S.frozen && !canFreeze(); }
+function clearPins() { S.pins = []; renderHealReadout(); renderFrozenReadout(); }
+
+// ------------------------------------------------------------------ the frozen lattice (smooth.js): positions edited apart from the field
+const canFreeze = () => !!(S.lat && S.lat.tris.length) && !S.healing && !S.seedPending && !S.freezing;
+/** true while a lattice is frozen, and says so: the solver's controls are locked then */
+function lockedHint() { if (!S.frozen) return false; setStatus('the lattice is frozen: Unfreeze (5 Edit lattice) to run, scrub, heal or re-seed'); return true; }
+/** Freeze: the lattice of the shown step leaves the field. Its sites go from the carrier vertices of their peaks to the
+ *  peaks between the vertices and stay points on the surface (smooth.js · freeze); S.lat is that lattice until Unfreeze,
+ *  so whatever draws, measures or exports a lattice takes its positions. The solver is locked meanwhile — pump, showStep,
+ *  extract and the heal passes look at S.frozen — so the field under a frozen lattice does not move. */
+async function freezeNow() {
+  const s = S.solver, c = S.carrier; if (!s || !c || S.frozen || S.freezing || S.healing) return;
+  if (S.seedPending) { setStatus('the global seed is still being solved: nothing to freeze yet'); return; }
+  S.freezing = true; S.playing = false; syncRun();
+  try {
+    while (S.pumping) await yieldTask();                                        // let the running batch finish (pump stops at S.freezing)
+    if (s !== S.solver || c !== S.carrier) return;
+    const targetBefore = S.target; S.target = Math.min(S.target, s.steps); syncStepsUI();          // a run stops where it is
+    if (S.shownStep !== S.target) showStep(S.target);
+    const u = s.stateAt(S.target);
+    extract(u, false);                                                          // the lattice of exactly this field
+    const lat = S.lat; if (!lat || !lat.tris.length) { setStatus('no lattice at this step: nothing to freeze'); return; }
+    const t0 = performance.now(), F = freeze(c, u, lat, S.a);
+    F.step = S.target; F.targetBefore = targetBefore; F.shiftMean = F.shift.reduce((x, y) => x + y, 0) / Math.max(F.shift.length, 1);
+    F.read = { bend: lathBend(lat, F.Q, F.cls), line: lineBend(lat) }; F.sub = { bend: lathBend(F, F.Q, F.cls), line: lineBend(F) };
+    S.frozen = F; S.lat = F; applySmooth();
+    setStatus(`lattice frozen at step ${F.step}: ${F.peaks.length} sites between the carrier vertices, ${F.sweeps} smoothing sweeps · ${(performance.now() - t0).toFixed(0)} ms`);
+  } catch (e) {
+    console.error(e); setStatus('freeze error: ' + e.message);
+    if (S.frozen) { S.frozen = null; try { extract(s.stateAt(S.target), false); } catch (e2) { console.error(e2); } }
+  } finally { S.freezing = false; syncFrozenUI(); }
+}
+/** Unfreeze: back to the read-out of the field at the step the lattice was frozen at. Freezing again with the same
+ *  smoothing gives the same lattice — but not the edits made on it (latedit.js): the button asks twice when there are any. */
+function unfreeze() {
+  const F = S.frozen, s = S.solver; if (!F) return;
+  S.frozen = null; S.undo = []; S.tool = null; S.unfreezeArmed = 0; syncFrozenUI();
+  if (s) extract(s.stateAt(F.step), false);
+  setStatus('unfrozen: the lattice is read from the field again, its sites on the carrier vertices');
+}
+/** a new seed or a new surface: the frozen lattice goes with the field it was read from. Returns whether there was one. */
+function dropFrozen() {
+  const F = S.frozen; if (!F) return false;
+  S.frozen = null; S.undo = []; S.tool = null; S.unfreezeArmed = 0;
+  S.target = Math.max(S.target, F.targetBefore || 0); $('sl-steps').value = S.target; $('out-steps').value = S.target;   // the next lattice grows as far as the one before was meant to
+  syncFrozenUI(); return true;
+}
+/** the smoothing asked for (S.smooth) on the frozen lattice. More sweeps carry on from where it is; fewer, or another
+ *  hold, start again from the positions as frozen: the same settings always give the same lattice. */
+function applySmooth() {
+  const F = S.frozen, c = S.carrier, o = S.smooth; if (!F || !c) return;
+  const key = `${o.mu}|${o.holdRim}|${o.holdSing}`, t0 = performance.now();
+  if (F.key !== key || o.sweeps < F.sweeps) { reset(F); F.key = key; }
+  if (o.sweeps > F.sweeps) relax(c, F, { sweeps: o.sweeps - F.sweeps, mu: o.mu, move: movable(F, { holdRim: o.holdRim, holdSingular: o.holdSing }) });
+  F.now = { bend: lathBend(F, F.Q, F.cls), line: lineBend(F), shape: shape(F) };
+  S.es = S.strands ? edgeStrain(F, S.strands, S.a, null) : null;            // the strain and orientation layers follow the positions
+  S.orient = orientationField(F, c, orientStart());
+  view.setLattice(F, S.summary); view.setSelectedVertex(S.selVertex);
+  updateLaths(); updateDirectionLayers(); updateLatticeReadout();
+  o.ms = performance.now() - t0;
+}
+let smoothQueued = false;                                                       // one smoothing per turn of the event loop while the slider is dragged
+function queueSmooth() { if (smoothQueued) return; smoothQueued = true; setTimeout(() => { smoothQueued = false; applySmooth(); }, 0); }
+/** 5 Edit lattice and the locks follow S.frozen (one path sets them all). The solver's controls carry class `locks`:
+ *  inert while a lattice is frozen. */
+function syncFrozenUI() {
+  const F = S.frozen, f = !!F, armed = f && Date.now() < S.unfreezeArmed;
+  $('app').classList.toggle('frozen', f);
+  for (const el of document.querySelectorAll('.locks')) el.inert = f;
+  $('setup-mini-run').disabled = f; $('setup-mini-reseed').disabled = f;
+  if (f && S.armPick) S.armPick = false;
+  if (!f) S.tool = null;
+  $('gl').classList.toggle('arm', S.armPick || !!S.tool);
+  $('btn-freeze').textContent = !f ? 'Freeze lattice' : armed ? `Unfreeze: drop ${F.edits} edit${F.edits > 1 ? 's' : ''}?` : 'Unfreeze';
+  $('smooth-block').hidden = !f; $('btn-export-frozen').hidden = !f; $('btn-undo').disabled = !S.undo.length;
+  for (const ch of document.querySelectorAll('#tool-chips .chip')) ch.classList.toggle('on', ch.dataset.tool === S.tool);
+  $('sl-smooth').value = S.smooth.sweeps; $('out-smooth').value = S.smooth.sweeps; $('ck-smooth-len').checked = S.smooth.mu > 0; $('ck-smooth-rim').checked = S.smooth.holdRim; $('ck-smooth-sing').checked = S.smooth.holdSing;
+  renderFrozenReadout();
+}
+/** the one line under Freeze: the kink of the laths at their crossings, rms and largest (live: of the read-out, while the section is open) */
+function renderFrozenReadout() {
+  const el = $('ro-frozen'), F = S.frozen, lat = S.lat, has = !!(lat && lat.tris.length);
+  $('btn-freeze').disabled = !F && !canFreeze();
+  if (!F) {
+    setSum('edit', has ? 'live' + (S.pins.length ? ` · ${S.pins.length} pinned` : '') : '');
+    if (!has) { el.textContent = ''; return; }
+    if (!$('sec-edit').open) return;                                          // only while the section shows it
+    const b = lathBend(lat); el.textContent = `kink ${b.rms.toFixed(2)}° rms · ${b.max.toFixed(0)}° max`; el.title = 'the turn of the laths at their crossings in the read-out (every site on a carrier vertex), rms and largest';
+    return;
+  }
+  if (!F.now) return;
+  const sh = F.now.shape, b = F.now.bend, ed = F.edits ? ` · ${F.edits} edit${F.edits > 1 ? 's' : ''}` : '';
+  el.innerHTML = `kink ${b.rms.toFixed(2)}° rms · ${b.max.toFixed(0)}° max` + (sh.folded ? ` · <span class="warn">${sh.folded} folded</span>` : '');
+  el.title = `the turn of the laths at their crossings, rms and largest. As read out ${F.read.bend.rms.toFixed(2)}°, between the carrier vertices ${F.sub.bend.rms.toFixed(2)}°; lattice lines now ${F.now.line.rms.toFixed(2)}°; edges ${(sh.edge / S.a).toFixed(3)} a ± ${(100 * sh.cv).toFixed(1)} %, largest move ${(sh.move / S.a).toFixed(2)} a` + (sh.folded ? `; ${sh.folded} triangle${sh.folded > 1 ? 's' : ''} folded over: fewer sweeps, or Undo` : '');
+  setSum('edit', `frozen · kink ${b.rms.toFixed(2)}°${ed}`);
+}
+
+// ------------------------------------------------------------------ edits of the frozen lattice (latedit.js)
+const TOOL_HINT = { heal: 'heal: click a 5 or a 7', rim: 'to rim: click a 5 or a 7', flip: 'flip: click a lattice edge', collapse: 'collapse: click a lattice edge', split: 'split: click a lattice edge', patch: 'patch: click a site of the rim' };
+/** the tool a click on the canvas uses (the same chip again, or Esc: none) */
+function setTool(t) {
+  S.tool = S.frozen && t && t !== S.tool ? t : null; syncFrozenUI();
+  setStatus(S.tool ? TOOL_HINT[S.tool] + ' · Esc ends' : '');
+}
+/** after a change of connectivity: the counts, the laths and the smoothing follow (the positions start again from
+ *  those as frozen, relaxed with the new connectivity) */
+function edited(msg) {
+  const F = S.frozen; if (!F) return;
+  S.summary = chargeSummary(F); S.strands = F.tris.length ? traceStrands(F.peaks.length, F.tris) : null;
+  clearSelection(false); S.unfreezeArmed = 0;
+  applySmooth(); syncFrozenUI(); setStatus(msg);
+}
+/** one edit, one step of Undo: run(carrier, F) returns {ok, why} or {ok, msg} */
+function edit(run) {
+  const F = S.frozen, c = S.carrier; if (!F || !c) return false;
+  const snap = snapshot(F); let r;
+  try { r = run(c, F); } catch (e) { console.error(e); restore(F, snap); edited('edit error: ' + e.message); return false; }
+  if (!r.ok) { setStatus(r.why); return false; }
+  S.undo.push(snap); if (S.undo.length > 40) S.undo.shift();
+  edited(r.msg); return true;
+}
+function undoEdit() { const F = S.frozen, s = S.undo.pop(); if (!F || !s) return; restore(F, s); edited(`undone · ${F.edits} edit${F.edits === 1 ? '' : 's'} left`); }
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+function healAllNow() { return edit((c, F) => { const r = healAll(c, F); if (r.ok) r.msg = `healed ${plural(r.clusters, 'cluster')}: ${r.singular[0]} → ${r.singular[1]} singular`; return r; }); }
+function patchRimNow() { return edit((c, F) => { const r = patchRim(c, F); if (r.ok) r.msg = `rim patched: ${plural(r.sites, 'site')}${r.beyond ? ` (${r.beyond} past the boundary)` : ''}, ${plural(r.tris, 'triangle')} · again for another row`; return r; }); }
+/** a click on the frozen lattice with a tool on: the 5 or 7, the rim site or the edge nearest to the point hit */
+function editAt(tool, x, y, z, site = -1) {
+  const F = S.frozen, a = S.a; if (!F) return false;
+  if (tool === 'heal') {
+    const sing = (i) => F.interior[i] === 1 && F.valence[i] !== 6, i = site >= 0 && sing(site) ? site : nearestSite(F, x, y, z, sing, 1.5 * a);
+    if (i < 0) { setStatus('heal: no 5 or 7 there'); return false; }
+    return edit((c, G) => { const r = healCluster(c, G, i); if (r.ok) r.msg = `healed ${r.before.join('-')} → ${r.after.length ? r.after.join('-') : 'regular'} · ${r.ops.join(' + ')}`; return r; });
+  }
+  if (tool === 'rim') {
+    const sing = (i) => F.interior[i] === 1 && F.valence[i] !== 6, i = site >= 0 && sing(site) ? site : nearestSite(F, x, y, z, sing, 1.5 * a);
+    if (i < 0) { setStatus('to rim: no 5 or 7 there'); return false; }
+    return edit((c, G) => {
+      const r = toRim(c, G, i); if (!r.ok) return r;
+      const cnt = Object.entries(r.ops.reduce((m, o) => (m[o] = (m[o] || 0) + 1, m), {})).map(([k, v]) => `${v} ${k}`).join(', ');
+      r.msg = `to rim: ${r.before.join('-')} ` + (r.out ? 'taken out' : `→ ${r.after.join('-')} left, ${plural(r.dist, 'row')} from the rim`) + ` · ${cnt}`; return r;
+    });
+  }
+  if (tool === 'patch') {
+    const rim = (i) => isRimSite(F, i), i = site >= 0 && rim(site) ? site : nearestSite(F, x, y, z, rim, 1.2 * a);
+    if (i < 0) { setStatus('patch: no rim site there'); return false; }
+    return edit((c, G) => { const r = patchSite(c, G, i); if (r.ok) r.msg = `patched: ${plural(r.sites, 'site')}${r.beyond ? ` (${r.beyond} past the boundary)` : ''}, ${plural(r.tris, 'triangle')}`; return r; });
+  }
+  const fn = { flip: flipEdge, collapse: collapseEdge, split: splitEdge }[tool], e = fn ? nearestEdge(F, x, y, z, 0.45 * a) : null;
+  if (!e) { setStatus(`${tool}: no lattice edge there`); return false; }
+  const say = {                                                               // the valences an edit changed: before → after
+    flip: (b, a) => `flip: ends ${b[0]} ${b[1]} → ${a[0]} ${a[1]} · opposite ${b[2]} ${b[3]} → ${a[2]} ${a[3]}`,
+    split: (b, a) => (b.length === 4 ? `split of a naked edge: the site behind it ${b[2]} → ${a[2]}` : `split: new site ${a[a.length - 1]} · opposite ${b.slice(2, -1).join(' ')} → ${a.slice(2, -1).join(' ')}`),
+    collapse: (b, a) => (b.length === 2 ? `collapse of a naked edge: the site behind it ${b[1]} → ${a[1]}` : `collapse: ${b[0]} → ${a[0]} · opposite ${b.slice(1).join(' ')} → ${a.slice(1).join(' ')}`),
+  }[tool];
+  return edit((c, G) => { const r = fn(c, G, e.a, e.b); if (r.ok) r.msg = say(r.before, r.after); return r; });
+}
 /** the Run button and its copy on the folded Setup rail always show the same state (one path sets both) */
 function syncRun() {
   const p = !!S.playing; $('btn-run').textContent = p ? 'Pause' : 'Run';
@@ -366,18 +543,18 @@ function makeResizable(rz, el, cssVar, key, leftOf, lim) {
   rz.addEventListener('dblclick', () => { app.style.removeProperty(cssVar); try { localStorage.removeItem(key); } catch (e) { /* ignore */ } });
   rz.addEventListener('keydown', (e) => { if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return; e.preventDefault(); const grow = (e.key === 'ArrowLeft') !== leftOf(); setWidth(el.getBoundingClientRect().width + (grow ? 24 : -24)); });
 }
-function renderHealReadout() {
-  const el = $('ro-heal'), R = S.healReport; $('btn-pins-clear').hidden = !S.pins.length;
-  if (S.healError) { el.textContent = 'heal error: ' + S.healError; S.healError = null; setStage('i-heal', 'bad'); return; }
-  if (!R) { el.textContent = S.pins.length ? `${S.pins.length} pinned` : 'not run yet — click Heal pairs once the surface is covered'; setStage('i-heal', S.pins.length ? 'warn' : 'idle'); return; }
-  setStage('i-heal', S.pins.length || (!R.healed && R.tried) ? 'warn' : 'ok');
-  const m = R.motifs || {}, g = R.glide;
-  const found = Object.entries(m).map(([k, v]) => `${v} ${k === 'tri' ? '5-5-7' : k}`).join(', ') || 'none';
-  const glide = g ? ` · free pairs ${g.pairs}: ${[g.annihilated ? `${g.annihilated} annihilated` : '', g.absorbed ? `${g.absorbed} absorbed` : '', g.toRim ? `${g.toRim} to the rim` : '', g.skipped ? `${g.skipped} needed by the curvature` : '', g.left ? `${g.left} left` : ''].filter(Boolean).join(', ') || 'none'}` : '';
-  const cl = R.climb, climb = cl ? ` · lone 5s / 7s off their curvature ${cl.sites}: ${cl.sites ? `${cl.moved} moved${cl.pinned ? ` (${cl.pinned} pinned)` : ''}, ${cl.left} left` : 'none'}` : '';
-  el.textContent = `motifs ${found} · ${R.healed} healed of ${R.tried} tried` + (R.pinned ? ` · ${R.pinned} pinned` : '') + glide + climb + (S.pins.length ? ` · ${S.pins.length} pin${S.pins.length > 1 ? 's' : ''} held` : '');
+/** the heal passes leave nothing in the panel: what a run did goes to the status bar (say), every kick to the console */
+function renderHealReadout(say = false) {
+  $('btn-pins-clear').hidden = !S.pins.length;
+  if (!say) return;
+  if (S.healError) { setStatus('heal error: ' + S.healError); S.healError = null; return; }
+  const R = S.healReport; if (!R) return;
+  const g = R.glide, cl = R.climb, parts = [];                                    // only the passes that ran
+  if (R.which === 'all' || R.which === 'motifs' || R.tried) parts.push(R.tried ? `${R.healed} of ${R.tried} motifs healed` : 'no bound motif');
+  if (g) parts.push(g.pairs ? `${g.pairs - (g.left || 0) - (g.skipped || 0)} of ${g.pairs} free pairs cleared` : 'no free pair');
+  if (cl) parts.push(cl.sites ? `${cl.moved || 0} of ${cl.sites} lone 5 · 7 moved` : 'no lone 5 · 7 off its curvature');
+  setStatus('heal: ' + parts.join(' · ') + (S.pins.length ? ` · ${S.pins.length} pinned` : ''));
 }
-
 function updateLaths() {
   if (!view.visible.laths) { view.setLaths(null, null, {}); return; }
   view.setLaths(S.lat, S.strands, { width: S.lathW * S.a, thickness: S.lathT * S.a, overUnder: S.overUnder, colouring: S.lathCol, selected: S.selLath });
@@ -451,16 +628,17 @@ function renderValenceChips() {
 
 function updateLatticeReadout() {
   const lat = S.lat, cs = S.summary;
+  renderFrozenReadout();
   if (!lat) {
     const dead = S.solver && S.solver.steps >= 1000 && S.shownStep >= 1000;
-    $('ro-strands').textContent = ''; $('st-lat').textContent = '';
+    $('ro-strands').textContent = ''; updateTopBar();
     $('growth-text').innerHTML = dead ? '<span class="bad">no lattice at this step — the pattern died out: raise r or b (4 Solve) or re-seed</span>' : 'no lattice yet — peaks · interior · singular are plotted against the step as the pattern grows';
     setStage('i-growth', dead ? 'bad' : 'idle'); renderValenceChips(); updateGrowthLegend(); return;
   }
   const c = S.carrier;
   const st = S.strands;
   $('ro-strands').innerHTML = st ? `laths: ${st.strands.length} strands (${st.strands.filter(x => x.closed).length} closed) · families ${[0, 1, 2].map(f => `<span class="sw" style="background:${FAMILY_HEX[f]}"></span>${st.family.filter(x => x === f).length}`).join(' ')} · ${st.edges.length} knots · parity conflicts ${st.parityConflicts} · colour conflicts ${st.colourConflicts}` : '';
-  $('st-lat').textContent = `· ${lat.peaks.length} peaks · ${cs.nInterior} interior · Σ(6−n) = ${cs.charge}`;
+  updateTopBar();
   renderValenceChips(); updateGrowthLegend();
   const want = Math.round(c.omega * 180 / Math.PI / 60), ideal = cs.singular.length === 1 && cs.charge === want;
   const P = S.pred, i = P ? Math.min(P.floor.length - 1, Math.round((S.shownStep >= 0 ? S.shownStep : 0) / 50)) : -1, need = P && i >= 0 ? P.floor[i] : null;
@@ -471,11 +649,29 @@ function updateLatticeReadout() {
   setStage('i-growth', !ideal && /class="warn"/.test(gap) ? 'warn' : 'ok');
 }
 
+const fmtLen = (x) => (x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x >= 1 ? x.toFixed(2) : x.toFixed(3));
+/** the top bar after the file name: vertices of the lattice · singular · mean edge (model units, and centimetres when the scale is not 1) */
+function updateTopBar() {
+  const lat = S.lat, cs = S.summary, E = edgeStats(), el = $('st-lat');
+  if (!lat || !cs) { el.textContent = ''; el.title = ''; return; }
+  el.textContent = `· ${lat.peaks.length} vertices · ${cs.singular.length} singular` + (E ? ` · edge avg ${fmtLen(E.mean)}${Math.abs(S.scale - 1) > 1e-9 ? ` (${fmtLen(E.mean * S.scale)} cm)` : ''}` : '') + (S.frozen ? ' · frozen' : '');
+  el.title = `lattice: ${lat.peaks.length} vertices, ${cs.nInterior} interior · Σ(6−n) = ${cs.charge}` + (E ? ` · edges ${fmtLen(E.min)} … ${fmtLen(E.max)} model units` : '') + (S.solver ? ` · step ${S.shownStep >= 0 ? S.shownStep : 0} / ${S.solver.steps} · a = ${S.a.toFixed(3)}` : '');
+}
 /** legend of the growth strip with the latest values (the chart itself has no room for it in the panel) */
 function updateGrowthLegend() {
-  const h = S.history.length ? S.history[S.history.length - 1] : null, step = S.shownStep >= 0 ? S.shownStep : 0;
+  const fz = S.frozen && S.summary ? [S.frozen.step, S.frozen.peaks.length, S.summary.nInterior, S.summary.singular.length] : null;   // a frozen lattice is counted itself: edits change it, the history does not know them
+  const h = fz || (S.history.length ? S.history[S.history.length - 1] : null), step = S.shownStep >= 0 ? S.shownStep : 0, E = edgeStats(), sig = fmtLen;
+  // the edges of the shown lattice in the units of a (model units, as in 2 Density), and in centimetres when the scale is not 1
+  const edges = !E ? '' : `<span class="ed" title="the ${E.n} edges of the shown lattice in model units, the units of a (2 Density: a = ${sig(S.a)}): ${(E.mean / S.a).toFixed(3)} a · ${(E.max / S.a).toFixed(2)} a · ${(E.min / S.a).toFixed(2)} a. Centimetres = model units × ${+S.scale.toPrecision(4)} (1 File → import options)">edge avg ${sig(E.mean)} · max ${sig(E.max)} · min ${sig(E.min)}` +
+    (Math.abs(S.scale - 1) > 1e-9 ? `<br><span class="dim">= ${sig(E.mean * S.scale)} · ${sig(E.max * S.scale)} · ${sig(E.min * S.scale)} cm</span>` : '') + `</span>`;
   $('growth-legend').innerHTML = `<span class="lg c1">peaks${h ? ' ' + h[1] : ''}</span><span class="lg c2">interior${h ? ' ' + h[2] : ''}</span><span class="lg c3">singular${h ? ' ' + h[3] : ''} <small>(right axis)</small></span>` +
-    `<span class="lg pred">predicted${S.pred && S.pred.coveredAt >= 0 ? ` · ideal cover ▴ ${S.pred.coveredAt.toLocaleString('en')}` : ''}</span><span class="dim">${step}${S.solver ? ' / ' + S.solver.steps : ''}</span>`;
+    `<span class="lg pred">predicted${S.pred && S.pred.coveredAt >= 0 ? ` · ideal cover ▴ ${S.pred.coveredAt.toLocaleString('en')}` : ''}</span>${edges}<span class="dim">${step}${S.solver ? ' / ' + S.solver.steps : ''}</span>`;
+}
+/** mean, longest and shortest edge of the shown lattice in model units (S.es.len: every lattice edge, read out or frozen) */
+function edgeStats() {
+  const len = S.lat && S.es ? S.es.len : null; if (!len || !len.length) return null;
+  let s = 0, mn = Infinity, mx = 0; for (let e = 0; e < len.length; e++) { const l = len[e]; s += l; if (l < mn) mn = l; if (l > mx) mx = l; }
+  return { mean: s / len.length, min: mn, max: mx, n: len.length };
 }
 /** tracked against the ideal front at the last read-out: the gap is what the surface costs the lattice */
 function predictionGap() {
@@ -575,7 +771,7 @@ function hexToRgb(h) { const m = /^#?([0-9a-f]{6})$/i.exec(h); if (!m) return [0
 function updateDensityReadout() {
   const c = S.carrier; if (!c) return;
   const q0 = 4 * Math.PI / (SQ3 * S.a), epa = S.a / c.h, ok = epa >= 6 && epa <= 12;
-  $('ro-q0').innerHTML = `q0 = 4π/(√3 a) = ${q0.toFixed(3)}`; void ok;
+  $('ro-q0').textContent = `q0 = ${q0.toFixed(3)}`; void ok;
   const kq = 1 + (q0 * c.h) ** 2 / 48;                                           // selected k / q0 of the uncorrected operator (c = 1/24, see solver_cpu.js)
   $('ro-disp').textContent = `${epa.toFixed(1)} edges per a: uncorrected edge = ${(1 / kq).toFixed(3)} a` + (S.disp ? ` → corrected, edge = a` : ` (sites, pitch and strain are then ${(100 * (kq - 1)).toFixed(1)} % off)`);
   $('nb-sites').value = sites().toFixed(0);
@@ -594,7 +790,8 @@ function showScale() {
   $('nb-scale').value = f;
   [['nb-w', 0], ['nb-d', 1], ['nb-h', 2]].forEach(([id, k]) => { $(id).value = +(size[k] * S.scale).toFixed(1); });
   $('ro-scale').textContent = `lattice edge a = ${(S.a * S.scale).toFixed(2)} cm (${S.a.toFixed(3)} model units × ${f})`;
-  view.setScale(S.scale);
+  $('ro-acm').textContent = `a = ${+(S.a * S.scale).toPrecision(4)} cm ·`;                // 2 Density: a is in model units; this is what the scale makes of it
+  view.setScale(S.scale); updateGrowthLegend(); updateTopBar();
 }
 function setScale(v) {
   if (!(Number.isFinite(v) && v > 0)) { showScale(); return; }
@@ -638,10 +835,13 @@ function onDensityChange(a) {
   setStatus(`q0 = ${(4 * Math.PI / (SQ3 * S.a)).toFixed(3)} · ${sites().toFixed(0)} sites expected`);
 }
 
+/** The centre is kept as a vertex of the ×1 carrier: the seed chart is computed there, and the id stays valid at every
+ *  refinement. A vertex picked on a ×2 / ×4 / ×8 carrier goes to the nearest ×1 vertex (at most about half a ×1 edge). */
 function setCentre(idx, mode) {
-  S.centre = idx; S.centreMode = mode; S.geo = null; updateCentreReadout();
+  const c = S.carrier, v = c.baseVertex(idx), moved = v !== idx ? Math.hypot(c.V[3 * v] - c.V[3 * idx], c.V[3 * v + 1] - c.V[3 * idx + 1], c.V[3 * v + 2] - c.V[3 * idx + 2]) : 0;
+  S.centre = v; S.centreMode = mode; S.geo = null; updateCentreReadout();
   reseedNow();
-  setStatus(`centre ${mode}: vertex ${idx} · defect ${(S.carrier.K[idx] * 180 / Math.PI).toFixed(1)}°`);
+  if (!S.seedFailed) setStatus(`centre ${mode}: vertex ${v} · defect ${(c.K[v] * 180 / Math.PI).toFixed(1)}°` + (moved ? ` · on the nearest vertex of the ×1 carrier, ${(moved / S.a).toFixed(2)} a from the click` : ''));
 }
 
 function syncStepsUI() { $('sl-steps').value = S.target; $('out-steps').value = S.target; if (S.solver && S.solver.steps < S.target) pump(); }   // start at once: the tick timer is throttled in a hidden tab
@@ -669,11 +869,13 @@ function updateViewSum() {
   setSum('view', `${on.join(' · ')}${S.projection === 'ortho' ? ' · ortho' : ''}${S.turntable ? ' · turntable' : ''}`);
 }
 
+const sysDark = window.matchMedia('(prefers-color-scheme: dark)'), isDark = () => (S.theme === 'auto' ? sysDark.matches : S.theme === 'dark');
+/** 'light' | 'dark' | 'auto' (the system's). The switch in the top bar shows the theme in effect; the first click on it fixes one. */
 function setTheme(t) {
-  S.theme = t;
-  if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
-  for (const chip of document.querySelectorAll('#theme-chips .chip')) chip.classList.toggle('on', chip.dataset.theme === t);
-  try { localStorage.setItem('localsh-theme', t); } catch (e) { /* ignore */ }
+  S.theme = t === 'light' || t === 'dark' ? t : 'auto';
+  if (S.theme === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', S.theme);
+  $('theme-switch').setAttribute('aria-checked', String(isDark()));
+  try { localStorage.setItem('localsh-theme', S.theme); } catch (e) { /* ignore */ }
 }
 
 // ------------------------------------------------------------------ layers shared by several chip rows
@@ -1071,17 +1273,20 @@ function chartStepAt(clientX) {
 
 // ------------------------------------------------------------------ export
 function exportLattice() {
-  const lat = S.lat, c = S.carrier; if (!lat) { setStatus('nothing to export yet'); return; }
-  // the header line: a and the scale (1 File → import options), both read by WeaveTogether (weave.js · parseOBJ)
-  const lines = [`# LocalSH ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${S.solver.steps} steps, r = ${S.r}, b = ${S.b}, sum(6-n) interior = ${S.summary.charge}, scale = ${+S.scale.toPrecision(7)} cm/unit`];
+  const lat = S.lat, c = S.carrier, F = S.frozen; if (!lat) { setStatus('nothing to export yet'); return; }
+  // the header line: a and the scale (1 File → import options), both read by WeaveTogether (weave.js · parseOBJ) — it
+  // is the hand-over and keeps its form. A frozen lattice writes its own positions and says so in a last comment.
+  const lines = [`# LocalSH ${c.name}: valence ${S.valence} seed, a = ${S.a.toFixed(4)}, ${F ? F.step : S.solver.steps} steps, r = ${S.r}, b = ${S.b}, sum(6-n) interior = ${S.summary.charge}, scale = ${+S.scale.toPrecision(7)} cm/unit`];
   const P = lat.P; for (let i = 0; i < P.length / 3; i++) lines.push(`v ${P[3 * i].toFixed(6)} ${P[3 * i + 1].toFixed(6)} ${P[3 * i + 2].toFixed(6)}`);
   const T = lat.tris; for (let t = 0; t < T.length / 3; t++) lines.push(`f ${T[3 * t] + 1} ${T[3 * t + 1] + 1} ${T[3 * t + 2] + 1}`);
   const sing = S.summary.singular.map(i => `# singular ${i}: valence ${lat.valence[i]} charge ${6 - lat.valence[i]}`);
-  const txt = lines.concat(sing).join('\n') + '\n';
-  $('modal-title').textContent = `lattice OBJ — ${P.length / 3} vertices, ${T.length / 3} triangles`;
-  $('modal-hint').textContent = `Copy the text into a .obj file (the dual triangulation of the peaks; singular vertices listed as comments at the end), or use Download where the page allows it. The first line carries a and the scale (${+S.scale.toPrecision(4)} cm per model unit, 1 File → import options): WeaveTogether opens the lattice at that size.`;
+  const note = F ? [`# frozen at step ${F.step}: sites between the carrier vertices, ${F.sweeps} smoothing sweeps${F.edits ? `, ${F.edits} connectivity edit${F.edits > 1 ? 's' : ''}` : ''}, lath kink ${F.now.bend.rms.toFixed(2)} deg rms (${F.read.bend.rms.toFixed(2)} as read out)`] : [];
+  const txt = lines.concat(sing, note).join('\n') + '\n';
+  $('modal-title').textContent = `lattice OBJ — ${P.length / 3} vertices, ${T.length / 3} triangles${F ? ' · frozen' : ''}`;
+  $('modal-hint').textContent = `Copy the text into a .obj file (the dual triangulation of the peaks; singular vertices listed as comments at the end), or use Download where the page allows it. The first line carries a and the scale (${+S.scale.toPrecision(4)} cm per model unit, 1 File → import options): WeaveTogether opens the lattice at that size.` +
+    (F ? ` Frozen lattice (step ${F.step}, ${F.sweeps} smoothing sweeps): the sites are written where 5 Edit lattice shows them.` : ' Not frozen: every site is written on the carrier vertex of its peak. Freeze lattice (5 Edit lattice) gives the positions between the vertices.');
   $('modal-text').value = txt;
-  try { const a = $('modal-download'); if (a._url) URL.revokeObjectURL(a._url); a._url = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); a.href = a._url; a.download = `${c.name.replace(/[^A-Za-z0-9_-]+/g, '_')}_v${S.valence}_${P.length / 3}v.obj`; } catch (e) { /* ignore */ }
+  try { const a = $('modal-download'); if (a._url) URL.revokeObjectURL(a._url); a._url = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); a.href = a._url; a.download = `${c.name.replace(/[^A-Za-z0-9_-]+/g, '_')}_v${S.valence}_${P.length / 3}v${F ? '_frozen' : ''}.obj`; } catch (e) { /* ignore */ }
   $('modal').hidden = false;
 }
 
@@ -1137,10 +1342,10 @@ function bind() {
   $('ck-cone-flat').addEventListener('change', (e) => { S.coneFlat = e.target.checked; setStatus(`size field: ${S.coneFlat ? 'flat on the developable parts (lattice edge a there)' : 'free everywhere'}`); if (S.seedMode === 'global' && S.coneMode !== 'uniform') reseedNow(); });
   $('cb-disp').addEventListener('change', (e) => { S.disp = e.target.checked; if (S.solver) S.solver.setParams({ dispersion: S.disp }); updateDensityReadout(); updatePrediction(); setStatus(S.disp ? 'operator corrected for the carrier dispersion (edge = a), field kept' : 'operator uncorrected (edge ≈ a / (1 + (q0 h)²/48)), field kept'); });
   // solve
-  $('sl-steps').addEventListener('input', (e) => { S.target = +e.target.value; $('out-steps').value = S.target; if (S.solver && S.solver.steps < S.target) pump(); });
-  $('btn-run').addEventListener('click', () => { S.playing = !S.playing; syncRun(); if (S.playing && S.solver && S.target <= S.solver.steps) { S.target = Math.min(S.maxSteps, S.solver.steps + S.spf); syncStepsUI(); } });
-  $('btn-plus').addEventListener('click', () => { if (S.solver) { S.target = Math.min(S.maxSteps, S.solver.steps + 500); syncStepsUI(); } });
-  $('btn-reseed').addEventListener('click', () => { S.playing = false; syncRun(); reseedNow(); });
+  $('sl-steps').addEventListener('input', (e) => { if (lockedHint()) return; S.target = +e.target.value; $('out-steps').value = S.target; if (S.solver && S.solver.steps < S.target) pump(); });
+  $('btn-run').addEventListener('click', () => { if (lockedHint()) return; S.playing = !S.playing; syncRun(); if (S.playing && S.solver && S.target <= S.solver.steps) { S.target = Math.min(S.maxSteps, S.solver.steps + S.spf); syncStepsUI(); } });
+  $('btn-plus').addEventListener('click', () => { if (lockedHint()) return; if (S.solver) { S.target = Math.min(S.maxSteps, S.solver.steps + 500); syncStepsUI(); } });
+  $('btn-reseed').addEventListener('click', () => { if (lockedHint()) return; S.playing = false; syncRun(); reseedNow(); });
   $('btn-export').addEventListener('click', exportLattice);
   const paramSlider = (id, out, key, digits) => {
     $(id).addEventListener('input', (e) => { $(out).value = (+e.target.value).toFixed(digits); drawPhase(key === 'dt' ? null : { [key]: +e.target.value }); if (key === 'dt') drawDtChart(+e.target.value); });
@@ -1154,9 +1359,31 @@ function bind() {
   $('nb-spf').addEventListener('change', (e) => { S.spf = Math.max(1, Math.min(200, +e.target.value | 0)); S.spfAuto = 0; });
   $('nb-cg').addEventListener('change', (e) => { S.cgManual = true; S.cgIters = Math.max(4, Math.min(60, +e.target.value | 0)); if (S.solver) S.solver.cgIters = S.cgIters; });
   for (const ch of document.querySelectorAll('#refine-chips .chip')) ch.addEventListener('click', () => setRefine(+ch.dataset.level));
-  // heal
-  $('btn-heal').addEventListener('click', () => healNow());
+  // 5 Edit lattice: heal (in the field) · freeze and smooth (on the positions)
+  $('btn-heal').addEventListener('click', () => healNow('all'));
+  for (const w of ['motifs', 'glide', 'climb']) $('btn-heal-' + w).addEventListener('click', () => healNow(w));
   $('btn-pins-clear').addEventListener('click', clearPins);
+  $('btn-freeze').addEventListener('click', () => {
+    const F = S.frozen; if (!F) { freezeNow(); return; }
+    if (F.edits && Date.now() >= S.unfreezeArmed) {                            // the edits are not in the field: asked twice
+      S.unfreezeArmed = Date.now() + 4000; syncFrozenUI(); setStatus(`Unfreeze drops the ${plural(F.edits, 'edit')} made on the frozen lattice: click again to go on`);
+      setTimeout(() => { if (S.frozen) syncFrozenUI(); }, 4100); return;
+    }
+    unfreeze();
+  });
+  for (const ch of document.querySelectorAll('#tool-chips .chip')) ch.addEventListener('click', () => setTool(ch.dataset.tool));
+  const later = (label, fn) => () => { setStatus(label); setTimeout(fn, 30); };  // the search can take a moment: the status first
+  $('btn-heal-all').addEventListener('click', later('healing the clusters…', healAllNow));
+  $('btn-patch-rim').addEventListener('click', later('patching the rim…', patchRimNow));
+  $('btn-undo').addEventListener('click', undoEdit);
+  $('btn-export-frozen').addEventListener('click', exportLattice);
+  // the slider smooths as it moves where that takes under 60 ms, else when it is let go
+  $('sl-smooth').addEventListener('input', (e) => { S.smooth.sweeps = +e.target.value; $('out-smooth').value = S.smooth.sweeps; if (S.smooth.ms < 60) queueSmooth(); });
+  $('sl-smooth').addEventListener('change', (e) => { S.smooth.sweeps = +e.target.value; $('out-smooth').value = S.smooth.sweeps; queueSmooth(); });
+  $('ck-smooth-len').addEventListener('change', (e) => { S.smooth.mu = e.target.checked ? 0.3 : 0; queueSmooth(); });   // springs to the edge lengths as frozen
+  $('ck-smooth-rim').addEventListener('change', (e) => { S.smooth.holdRim = e.target.checked; queueSmooth(); });
+  $('ck-smooth-sing').addEventListener('change', (e) => { S.smooth.holdSing = e.target.checked; queueSmooth(); });
+  $('sec-edit').addEventListener('toggle', () => { if ($('sec-edit').open) renderFrozenReadout(); });
   bindPhase();
   for (const ch of document.querySelectorAll('#strain-chips .chip')) ch.addEventListener('click', () => { S.strainFam = +ch.dataset.fam; for (const o of document.querySelectorAll('#strain-chips .chip')) o.classList.toggle('on', o === ch); updateDirectionLayers(); });
   $('nb-strain-range').addEventListener('change', (e) => { S.strainRange = Math.max(0.02, Math.min(0.6, +e.target.value / 100)); updateDirectionLayers(); });
@@ -1181,7 +1408,8 @@ function bind() {
     if (moved > 5 || !S.carrier) return;
     const hit = view.pick(e.clientX, e.clientY);
     if (!hit) { clearSelection(); return; }
-    if (e.shiftKey || S.armPick) {                                           // centre picking: Shift-click or the armed button
+    if (S.frozen && S.tool) { editAt(S.tool, hit.point.x, hit.point.y, hit.point.z, hit.kind === 'vertex' ? hit.peak : -1); return; }   // a tool of 5 Edit lattice is on
+    if ((e.shiftKey || S.armPick) && !lockedHint()) {                        // centre picking: Shift-click or the armed button (not under a frozen lattice: it re-seeds)
       const v = hit.kind === 'carrier' ? hit.vertex : (hit.kind === 'vertex' && S.lat ? S.lat.peaks[hit.peak] : -1);
       const idx = v >= 0 ? v : nearestCarrierVertex(hit.point);
       S.armPick = false; gl.classList.remove('arm');
@@ -1204,7 +1432,7 @@ function bind() {
   $('nav-proj').addEventListener('click', () => setProjection(S.projection === 'persp' ? 'ortho' : 'persp'));
   $('sl-turn').addEventListener('input', (e) => { S.turnSpeed = +e.target.value; $('out-turn').value = S.turnSpeed; if (S.turntable) view.setTurntable(true, S.turnSpeed); });
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { S.armPick = false; gl.classList.remove('arm'); clearSelection(); return; }
+    if (e.key === 'Escape') { S.armPick = false; if (S.tool) setTool(null); gl.classList.remove('arm'); clearSelection(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
     const k = e.key.toLowerCase();
     if (k === 'h') view.home(); else if (k === 'f') view.fit(); else if (k === 't') setTurntable(!S.turntable); else if (k === 'p') setProjection(S.projection === 'persp' ? 'ortho' : 'persp'); else return;
@@ -1212,7 +1440,7 @@ function bind() {
   });
   // growth strip: scrub by pointer
   const chart = $('chart'); let chartDown = false;
-  const scrub = (e) => { S.target = chartStepAt(e.clientX); syncStepsUI(); };
+  const scrub = (e) => { if (lockedHint()) return; S.target = chartStepAt(e.clientX); syncStepsUI(); };
   chart.addEventListener('pointerdown', (e) => { chartDown = true; chart.setPointerCapture(e.pointerId); scrub(e); });
   chart.addEventListener('pointermove', (e) => { if (chartDown) scrub(e); });
   chart.addEventListener('pointerup', () => { chartDown = false; }); chart.addEventListener('pointercancel', () => { chartDown = false; });
@@ -1254,7 +1482,8 @@ function bind() {
     d.addEventListener('toggle', () => { folds[d.id] = d.open; try { localStorage.setItem('localsh-folds', JSON.stringify(folds)); } catch (e) { /* ignore */ } });
   }
   // theme
-  for (const chip of document.querySelectorAll('#theme-chips .chip')) chip.addEventListener('click', () => setTheme(chip.dataset.theme));
+  $('theme-switch').addEventListener('click', () => setTheme(isDark() ? 'light' : 'dark'));
+  try { sysDark.addEventListener('change', () => $('theme-switch').setAttribute('aria-checked', String(isDark()))); } catch (e) { /* ignore */ }
   // modal
   $('modal-close').addEventListener('click', () => { $('modal').hidden = true; });
   $('modal').addEventListener('click', (e) => { if (e.target === $('modal')) $('modal').hidden = true; });
@@ -1368,8 +1597,8 @@ window.addEventListener('unhandledrejection', (e) => setStatus('error: ' + (e.re
 async function main() {
   bind(); initTips();
   view.setFieldAlpha(S.carrierAlpha); view.setStripeParams({ alpha: S.stripeAlpha, halfWidth: stripeHalfWidth() }); view.setVisible('cones', false);
-  renderHealReadout();
-  try { const t = localStorage.getItem('localsh-theme'); if (t && t !== 'auto') setTheme(t); } catch (e) { /* ignore */ }
+  renderHealReadout(); syncFrozenUI();
+  { let t = 'auto'; try { t = localStorage.getItem('localsh-theme') || 'auto'; } catch (e) { /* ignore */ } setTheme(t); }
   $('sl-steps').max = S.maxSteps; $('nb-max').value = S.maxSteps;
   if (window.top !== window.self) $('modal-download').hidden = true;      // the artifact viewer blocks page downloads
   S.device = new URLSearchParams(location.search).has('cpu') ? null : await getDevice();
@@ -1382,8 +1611,9 @@ async function main() {
   requestAnimationFrame(loop);
   setInterval(tick, 150);                                 // rAF stops in hidden tabs; keep the solver advancing anyway
 }
-window.LocalSH = S; S.api = { selectLath, selectVertex, clearSelection, setTheme, setCentre, updateLaths, setTurntable, setProjection, setRefine, setSide, view, extract, reseedNow, setLayer, updatePrediction, globalField, loadCarrierByName, onDensityChange,
+window.LocalSH = S; S.api = { setTool, editAt, undoEdit, healAllNow, patchRimNow, selectLath, selectVertex, clearSelection, setTheme, setCentre, updateLaths, setTurntable, setProjection, setRefine, setSide, view, extract, reseedNow, setLayer, updatePrediction, globalField, loadCarrierByName, onDensityChange,
   setSeedMode: (m) => document.querySelector(`#seed-mode .chip[data-mode="${m}"]`).click(), setConeMode: (m) => { $('sel-cones').value = m; S.coneMode = m; $('row-cone-flat').hidden = m === 'uniform'; if (S.seedMode === 'global') reseedNow(); },
   setConeFlat: (on) => { $('ck-cone-flat').checked = !!on; $('ck-cone-flat').dispatchEvent(new Event('change')); },
-  healNow, setStage, clearPins, findMotifs, pump, run: (target) => { S.target = Math.min(S.maxSteps, target); syncStepsUI(); } };   // for debugging and scripted runs from the console
+  healNow, setStage, clearPins, findMotifs, pump, run: (target) => { if (lockedHint()) return; S.target = Math.min(S.maxSteps, target); syncStepsUI(); },
+  freezeNow, unfreeze, applySmooth, lathBend, lineBend, setSmooth: (o) => { Object.assign(S.smooth, o); syncFrozenUI(); applySmooth(); } };   // for debugging and scripted runs from the console
 main();

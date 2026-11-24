@@ -449,6 +449,23 @@ export class Carrier {
     return cur;
   }
 
+  /** The base-level vertex nearest to vertex c of a refined carrier (c itself when it is one, or on a carrier that is
+   *  not refined). Charts, distances and the detection of a refined carrier are computed on its base and interpolated,
+   *  and the base only has its own vertices: a centre picked on a ×2 / ×4 / ×8 carrier is usually a midpoint that the
+   *  base does not know (asking it for one gave a chart of NaN: the black model of 2026-11-23). */
+  baseVertex(c) {
+    const base = this.base; if (!base || !(c >= base.n)) return c;
+    const sizes = [base.n]; for (const par of this.parents) sizes.push(sizes[sizes.length - 1] + par.length / 2);
+    let ids = [c];                                                            // the ancestors of a midpoint: its two edge ends, and theirs, down to the base
+    for (let l = this.parents.length - 1; l >= 0; l--) {
+      const next = []; for (const v of ids) { if (v >= sizes[l]) { const k = 2 * (v - sizes[l]); next.push(this.parents[l][k], this.parents[l][k + 1]); } else next.push(v); }
+      ids = next;
+    }
+    const V = this.V; let best = ids[0], bd = Infinity;
+    for (const v of ids) { const d = (V[3 * v] - V[3 * c]) ** 2 + (V[3 * v + 1] - V[3 * c + 1]) ** 2 + (V[3 * v + 2] - V[3 * c + 2]) ** 2; if (d < bd) { bd = d; best = v; } }
+    return best;
+  }
+
   static async fromURL(url) {
     const res = await fetch(url); if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
     return new Carrier(parseLSHC(await res.arrayBuffer()));
@@ -528,7 +545,7 @@ export class Carrier {
    *  Exact on a developable patch (cone) seen from its apex; unlike the heat method it keeps the distance right up
    *  to the rim (the heat method's Neumann condition compressed the v4 cone's rim from 6.1 a to 5.0 a). Cached. */
   geodesicDistance(c) {
-    if (this.base) return this.interp(this.base.geodesicDistance(c));
+    if (this.base) return this.interp(this.base.geodesicDistance(Array.isArray(c) ? c.map(v => this.baseVertex(v)) : this.baseVertex(c)));
     this._geoCache = this._geoCache || new Map();
     const key = Array.isArray(c) ? 'set:' + c.length + ':' + c[0] : c;      // c: one vertex, or an array of sources (the rim)
     if (this._geoCache.has(key)) return this._geoCache.get(key);
@@ -798,7 +815,7 @@ export class Carrier {
    *  on ρ with intrinsic corner angles (exact on a cone from its apex, where the angles are rescaled to 2π). */
   logMap(c) {
     if (this.base) {                                                          // chart on the base carrier, interpolated (it is smooth at the base scale)
-      const b = this.base.logMap(c), rho = this.interp(b.rho), px = this.interp(b.px), py = this.interp(b.py);
+      const b = this.base.logMap(this.baseVertex(c)), rho = this.interp(b.rho), px = this.interp(b.px), py = this.interp(b.py);
       const theta = new Float64Array(this.n); for (let i = 0; i < this.n; i++) theta[i] = Math.atan2(py[i], px[i]);
       return { rho, theta, px, py };
     }
@@ -842,7 +859,7 @@ export class Carrier {
    *  weights keep φ flatter there (cones.js · developableWeights). Returns {phi, residualDeg, min, max, iters}. Computed
    *  on the base carrier. */
   sizeField(cones, a, centre, { x0 = null, tol = 1e-8, smear = 0, weights = null } = {}) {
-    if (this.base) { const r = this.base.sizeField(cones, a, centre, { x0, tol, smear, weights }); return { ...r, phi: this.interp(r.phi) }; }
+    if (this.base) { const r = this.base.sizeField(cones, a, centre >= 0 ? this.baseVertex(centre) : centre, { x0, tol, smear, weights }); return { ...r, phi: this.interp(r.phi) }; }
     const { n, K, boundary, m } = this, { L, Ldiag } = weights ? this.weightedLaplacian(weights) : this;
     const rhs = new Float64Array(n);
     for (let i = 0; i < n; i++) rhs[i] = boundary[i] ? 0 : -K[i];

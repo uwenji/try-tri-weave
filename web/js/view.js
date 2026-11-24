@@ -379,6 +379,20 @@ export class View {
   sides() { return this.twoSided ? [1, -1] : [1]; }
   /** the normals of two nearby carrier vertices point to opposite sides (the seam of a one-sided carrier lies between) */
   normalsFlip(p, q) { const N = this.carrier.N; return N[3 * p] * N[3 * q] + N[3 * p + 1] * N[3 * q + 1] + N[3 * p + 2] * N[3 * q + 2] < 0; }
+  /** a lattice site: the carrier vertex of its peak — or, on a frozen lattice (lat.frozen, smooth.js: its sites are
+   *  points on the carrier), its own point and the surface normal there */
+  sitePos(lat, i) { if (lat.frozen) return [lat.P[3 * i], lat.P[3 * i + 1], lat.P[3 * i + 2]]; const V = this.carrier.V, v = lat.peaks[i]; return [V[3 * v], V[3 * v + 1], V[3 * v + 2]]; }
+  siteNormal(lat, i) { const N = lat.frozen ? lat.nrm : this.carrier.N, v = lat.frozen ? i : lat.peaks[i]; return [N[3 * v], N[3 * v + 1], N[3 * v + 2]]; }
+  /** the site lifted by k along its normal, on the chosen side (lifted, for a site that need not be a carrier vertex) */
+  site(lat, i, k) {
+    if (!lat.frozen) return this.lifted(lat.peaks[i], k);
+    const s = k * this.sideSign, P = lat.P, n = lat.nrm; return [P[3 * i] + s * n[3 * i], P[3 * i + 1] + s * n[3 * i + 1], P[3 * i + 2] + s * n[3 * i + 2]];
+  }
+  /** the normals at two neighbouring sites point to opposite sides (normalsFlip, for sites) */
+  sitesFlip(lat, i, j) {
+    if (!lat.frozen) return this.normalsFlip(lat.peaks[i], lat.peaks[j]);
+    const n = lat.nrm; return n[3 * i] * n[3 * j] + n[3 * i + 1] * n[3 * j + 1] + n[3 * i + 2] * n[3 * j + 2] < 0;
+  }
 
   setLattice(lat, summary) {
     const c = this.carrier;
@@ -386,7 +400,7 @@ export class View {
     if (!lat) { this._setLayer('lattice', null); this._setLayer('peaks', null); this._setLayer('singular', null); this._setLayer('selected', null); return; }
     const lift = 0.6 * c.h, npk = lat.peaks.length, sides = this.sides();
     const P = new Float32Array(npk * 3 * sides.length);                      // one copy per side (peak i of side s at s·npk + i)
-    sides.forEach((sd, s) => { for (let i = 0; i < npk; i++) { const q = this.lifted(lat.peaks[i], sd * lift); P.set(q, 3 * (s * npk + i)); } });
+    sides.forEach((sd, s) => { for (let i = 0; i < npk; i++) { const q = this.site(lat, i, sd * lift); P.set(q, 3 * (s * npk + i)); } });
     this.latticeP = P;
     // edges
     const seen = new Set(), segs = [];
@@ -394,7 +408,7 @@ export class View {
     for (let t = 0; t < T.length / 3; t++) for (const [i, j] of [[T[3 * t], T[3 * t + 1]], [T[3 * t + 1], T[3 * t + 2]], [T[3 * t + 2], T[3 * t]]]) {
       const k = i < j ? i * 1e5 + j : j * 1e5 + i; if (seen.has(k)) continue; seen.add(k);
       // an edge across the seam joins the copy of i on one side to the copy of j on the same side (its normal flipped)
-      const fl = sides.length > 1 && this.normalsFlip(lat.peaks[i], lat.peaks[j]);
+      const fl = sides.length > 1 && this.sitesFlip(lat, i, j);
       for (let s = 0; s < sides.length; s++) { const a = 3 * (s * npk + i), b = 3 * ((fl ? 1 - s : s) * npk + j); segs.push(P[a], P[a + 1], P[a + 2], P[b], P[b + 1], P[b + 2]); }
     }
     const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(segs), 3));
@@ -408,7 +422,7 @@ export class View {
       const da = this.a || 8 * c.h;                                        // disc size follows the lattice edge
       const v = lat.valence[i];
       for (const sd of sides) {
-        const sp = this._disc(String(v), valenceHex(v), this.lifted(lat.peaks[i], sd * 1.6 * c.h), Math.max(1.9 * c.h, 0.3 * da), { kind: 'vertex', peak: i, valence: v });
+        const sp = this._disc(String(v), valenceHex(v), this.site(lat, i, sd * 1.6 * c.h), Math.max(1.9 * c.h, 0.3 * da), { kind: 'vertex', peak: i, valence: v });
         sp.visible = this.showValence[v] !== false;
         g.add(sp);
       }
@@ -437,7 +451,7 @@ export class View {
     const da = this.a || 8 * c.h;
     const v = lat.valence[peak], g = new THREE.Group();
     for (const sd of this.sides()) {
-      const sp = this._disc(String(peak), valenceHex(v), this.lifted(lat.peaks[peak], sd * 1.9 * c.h), Math.max(2.9 * c.h, 0.46 * da), { kind: 'vertex', peak, valence: v });
+      const sp = this._disc(String(peak), valenceHex(v), this.site(lat, peak, sd * 1.9 * c.h), Math.max(2.9 * c.h, 0.46 * da), { kind: 'vertex', peak, valence: v });
       sp.renderOrder = 6; g.add(sp);
     }
     this.visible.selected = true; this._setLayer('selected', g);
@@ -496,7 +510,7 @@ export class View {
   setLaths(lat, strandsData, opts) {
     const c = this.carrier;
     if (!lat || !strandsData || !strandsData.strands.length) { this._setLayer('laths', null); this._setLayer('path', null); this.lathFaceStrand = null; return; }
-    const { edges, strands, family, over: overRaw } = strandsData, pk = lat.peaks, N = c.N, sg = this.sideSign;
+    const { edges, strands, family, over: overRaw } = strandsData, sg = this.sideSign;
     const over = sg > 0 ? overRaw : (si, i) => !overRaw(si, i);            // seen from the other side, over becomes under
     const w = opts.width, thk = opts.thickness ?? 0.3 * w, hw = w / 2, ht = thk / 2, lift = 0.45 * c.h, sel = opts.selected ?? -1;
     // sections per segment between two crossings: 4, or 2 on very large lattices (the geometry is built in one go)
@@ -510,10 +524,10 @@ export class View {
     const pos = new Float32Array(3 * nv), nrm = new Float32Array(3 * nv), col = new Float32Array(3 * nv), idx = new Uint32Array(3 * nt), faceStrand = new Int32Array(nt);
     let vi = 0, ti = 0;
     const dim = [this.colCanvas.r, this.colCanvas.g, this.colCanvas.b];
-    const edgeMid = (e) => {
-      const [a, b] = edges[e], va = pk[a], vb = pk[b];
-      const m = [0.5 * (c.V[3 * va] + c.V[3 * vb]), 0.5 * (c.V[3 * va + 1] + c.V[3 * vb + 1]), 0.5 * (c.V[3 * va + 2] + c.V[3 * vb + 2])];
-      let n = [N[3 * va] + N[3 * vb], N[3 * va + 1] + N[3 * vb + 1], N[3 * va + 2] + N[3 * vb + 2]]; const l = Math.hypot(...n) || 1; n = n.map(v => sg * v / l);
+    const edgeMid = (e) => {                                                 // a crossing: the midpoint of a lattice edge and the normal there
+      const [a, b] = edges[e], pa = this.sitePos(lat, a), pb = this.sitePos(lat, b), na = this.siteNormal(lat, a), nb = this.siteNormal(lat, b);
+      const m = [0.5 * (pa[0] + pb[0]), 0.5 * (pa[1] + pb[1]), 0.5 * (pa[2] + pb[2])];
+      let n = [na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]; const l = Math.hypot(...n) || 1; n = n.map(v => sg * v / l);
       return { m, n };
     };
     let selPath = null, selClosed = false;
@@ -589,7 +603,7 @@ export class View {
   setStrain(lat, strandsData, es, opts = {}) {
     const c = this.carrier;
     if (!lat || !strandsData || !es) { this._setLayer('strain', null); return; }
-    const fam = opts.family ?? -1, range = opts.range ?? 0.15, { edges } = strandsData, pk = lat.peaks;
+    const fam = opts.family ?? -1, range = opts.range ?? 0.15, { edges } = strandsData;
     const keep = []; for (let e = 0; e < edges.length; e++) if (es.fam[e] >= 0 && (fam < 0 || es.fam[e] === fam)) keep.push(e);
     if (!keep.length) { this._setLayer('strain', null); return; }
     const da = this.a || 8 * c.h, radius = Math.max(0.035 * da, 0.22 * c.h), lift = 1.0 * c.h;
@@ -598,7 +612,7 @@ export class View {
     const Y = new THREE.Vector3(0, 1, 0), A = new THREE.Vector3(), B = new THREE.Vector3(), D = new THREE.Vector3(), M = new THREE.Vector3(), SC = new THREE.Vector3();
     sides.forEach((sd, si) => keep.forEach((e, k0) => {
       const [i, j] = edges[e], k = si * keep.length + k0;
-      A.fromArray(this.lifted(pk[i], sd * lift)); B.fromArray(this.lifted(pk[j], (sides.length > 1 && this.normalsFlip(pk[i], pk[j]) ? -sd : sd) * lift));
+      A.fromArray(this.site(lat, i, sd * lift)); B.fromArray(this.site(lat, j, (sides.length > 1 && this.sitesFlip(lat, i, j) ? -sd : sd) * lift));
       D.subVectors(B, A); const len = D.length() || 1e-9; D.divideScalar(len); M.addVectors(A, B).multiplyScalar(0.5);
       q.setFromUnitVectors(Y, D); SC.set(1, len * 0.92, 1);
       m4.compose(M, q, SC); inst.setMatrixAt(k, m4);
@@ -624,7 +638,7 @@ export class View {
     const sides = this.sides(), pos = new Float32Array(idx.length * 27 * sides.length), col = new Float32Array(idx.length * 27 * sides.length);   // 3 triangles per arrow
     const amber = new THREE.Color('#DDAA33'), red = new THREE.Color('#BB3355'), cc = new THREE.Color();
     sides.forEach((sd, si) => idx.forEach((i, k0) => {
-      const k = si * idx.length + k0, v = lat.peaks[i], M = this.lifted(v, sd * lift), n = [sd * sg * c.N[3 * v], sd * sg * c.N[3 * v + 1], sd * sg * c.N[3 * v + 2]];
+      const k = si * idx.length + k0, v = lat.peaks[i], M = this.site(lat, i, sd * lift), n = [sd * sg * c.N[3 * v], sd * sg * c.N[3 * v + 1], sd * sg * c.N[3 * v + 2]];
       const l = [arrow[3 * i], arrow[3 * i + 1], arrow[3 * i + 2]], gl = cross3(n, l);
       const d = [0, 1, 2].map(q => c30 * l[q] + s30 * gl[q]), g = cross3(n, d);
       const P = (s, t) => [M[0] + s * d[0] + t * g[0], M[1] + s * d[1] + t * g[1], M[2] + s * d[2] + t * g[2]];

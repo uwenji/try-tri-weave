@@ -16,12 +16,16 @@
 <body>
 <div id="app">
   <header id="statusbar">
-    <span class="brand">TryTriWeave</span>
+    <span class="brand" id="st-brand">TryTriWeave</span>
     <span id="st-mesh" class="st">no surface</span>
-    <span id="st-run" class="st"></span>
     <span id="st-lat" class="st"></span>
     <span id="st-msg" class="st dim"></span>
-    <span id="st-backend" class="st pill">…</span>
+    <!-- the theme switch of WeaveTogether: light ⟷ dark, the knob on the side in use; follows the system until it is used -->
+    <button id="theme-switch" class="tswitch" type="button" role="switch" aria-checked="false" aria-label="dark theme" title="light / dark — follows the system until you switch it">
+      <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.1" fill="currentColor"/><g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 1.2v1.9M8 12.9v1.9M1.2 8h1.9M12.9 8h1.9M3.2 3.2l1.35 1.35M11.45 11.45l1.35 1.35M3.2 12.8l1.35-1.35M11.45 4.55l1.35-1.35"/></g></svg>
+      <span class="track"><span class="knob"></span></span>
+      <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 10.1A5.6 5.6 0 0 1 5.9 2.8a5.7 5.7 0 1 0 7.3 7.3z" fill="currentColor"/></svg>
+    </button>
   </header>
 
   <!-- Setup: the numbered sections (an accordion, one open at a time) under the solver strip; folds to a rail that keeps
@@ -42,18 +46,18 @@
         <button class="info stat" id="i-growth" type="button" data-src="growth-text" title="Peaks, interior peaks (closed link) and singular peaks against the step; dashed: the prediction for an ideal front at the flat-lattice speed. Click or drag the chart to scrub the shown step.">i</button>
       </div>
       <canvas id="chart" width="360" height="118" title="click or drag to scrub the shown step · solid = tracked, dashed = predicted (ideal front, flat-lattice speed)"></canvas>
-      <div class="row slider" id="row-steps">
+      <div class="row slider locks" id="row-steps">
         <label for="sl-steps">steps</label>
         <input type="range" id="sl-steps" min="0" max="15000" step="10" value="3000">
         <output id="out-steps" class="mono">3000</output>
       </div>
-      <div class="row buttons" id="row-solve">
+      <div class="row buttons locks" id="row-solve">
         <button id="btn-run" class="btn primary">Run</button>
         <button id="btn-plus" class="btn">+500</button>
         <button id="btn-reseed" class="btn">Re-seed</button>
         
       </div>
-      <div class="row" id="row-limits">
+      <div class="row locks" id="row-limits">
         <label for="nb-max" class="dim">max steps</label><input type="number" id="nb-max" class="num short" min="500" step="500" value="15000" title="the end of the steps slider and of Run">
         <label for="nb-spf" class="dim">per frame</label><input type="number" id="nb-spf" class="num short" min="1" max="200" value="25" title="steps per frame: the largest batch between two read-outs">
       </div>
@@ -117,7 +121,7 @@
 
     <details class="sec" name="setup" id="sec-density">
       <summary><span class="chev"></span><h2>2 Density</h2><span class="sum" id="sum-density"></span></summary>
-      <div class="body">
+      <div class="body locks">
       <div class="row slider">
         <label for="sl-a">lattice edge a <button class="info stat" id="i-density" type="button" data-src="ro-disp dens-svg" title="a = lattice edge in model units (distance between neighbouring sites). Sites ≈ area / (√3⁄2 · a²); crossings ≈ 3 × sites; strand pitch = √3⁄2 · a; lath width = slider × a. The carrier should resolve a with 6–12 edges (green); refine it below for a denser lattice.">i</button></label>
         <input type="range" id="sl-a" min="0" max="1000" value="500">
@@ -126,7 +130,8 @@
       <div class="row">
         <label for="nb-sites">≈ sites</label>
         <input type="number" id="nb-sites" step="1" min="4" class="num">
-        <span class="readout inline" id="ro-q0">q0 = —</span>
+        <span class="readout inline" id="ro-acm" title="the lattice edge in centimetres: a (model units) × the scale of 1 File → import options → scale. The model's bounding box is scaled by the same factor (Display → bounding box)">a = — cm ·</span>
+        <span class="readout inline" id="ro-q0" title="q0 = 4π / (√3 a): the wavenumber the pattern selects">q0 = —</span>
       </div>
       <div class="row">
         <label for="cb-disp">correct q0 for the carrier <button class="info" type="button" title="The cotan Laplacian on a mesh of edge h has the symbol λ(k) ≈ k²(1 − c k²h²) (c ≈ 1/24 measured on the remeshed carriers, 1/16 on an equilateral grid), so the SH operator selects k = q0(1 + c(q0h)²/2): an edge of 0.981 a at 8 carrier edges per a, 0.966 a at 6. With the correction the operator uses λ(q0) in place of q0² and the realised edge is a (±0.5 %). The continuum SH23 ground state itself sits at q0 within +0.3 % (experiments/calibrate.js).">i</button></label>
@@ -143,7 +148,7 @@
 
     <details class="sec" name="setup" id="sec-sing">
       <summary><span class="chev"></span><h2>3 Singularity</h2><span class="sum" id="sum-sing"></span></summary>
-      <div class="body">
+      <div class="body locks">
       <div class="row">
         <label>seed <button class="info" type="button" title="local: plant one ideal singularity at the centre and let the lattice grow from it. global: no centre — solve the globally smoothest 6-fold direction field on the whole surface (Knöppel et al. 2013; its singularities are where the curvature puts the 5s and 7s), integrate the three stripe phases along it (Knöppel et al. 2015; branch points are the dislocations the geometry forces), and start SH from that hexagonal field everywhere.">i</button></label>
         <div class="chips inline" id="seed-mode"><button class="chip on" data-mode="local">local centre</button><button class="chip" data-mode="global">global rotation field</button></div>
@@ -197,16 +202,8 @@
     </details>
 
     <details class="sec" name="setup" id="sec-solve">
-      <summary><span class="chev"></span><h2>4 Solve</h2><span class="sum" id="sum-solve"></span></summary>
-      <div class="body">
-      <div class="row">
-        <button id="btn-heal" class="btn" type="button">Heal pairs</button>
-        <label class="check"><input type="checkbox" id="ck-heal-glide" checked> glide free 5–7 pairs</label>
-        <label class="check"><input type="checkbox" id="ck-heal-climb"> move lone 5s / 7s to their curvature (experimental)</label>
-        <label class="check"><input type="checkbox" id="ck-heal-pin" checked> pin what will not hold</label>
-        <button id="btn-pins-clear" class="btn" type="button" hidden>Clear pins</button>
-        <button class="info stat" id="i-heal" type="button" data-src="ro-heal" title="Reads the lattice and takes apart the bound pairs one at a time, inside the solver. 5-7-5 with two regular sites between the 5s around the 7 = a pentagon missing its centre site: a peak is nucleated at the centre and the 7 pushed outward. 7-5-7 with one site between the 7s = a heptagon holding one site too many: the 5 and that site are merged. 5-7-5 with one site between the 5s, 7-7-5 triangles and 5-7-7-5 = a quad with the wrong diagonal: the four sites are moved so the diagonal flips. 5-5-7 triangles: the two 5s are merged (the merged site and the 7 become 6s, the other common neighbour of the 5s becomes the 5). Each kick is held for 60 steps, then the field runs 400 steps free; the lattice is read again and the kick is kept only if the defects around it went down (else the field is put back). glide: a free 5–7 pair is a dislocation — no single flip removes it, a flip of the 7's edge to a far corner of the 5–7 edge moves it by one lattice vector. Pairs the curvature does not ask for (less than 30° under them) are carried flip by flip to the nearest other free pair (anti-pairs annihilate), else to the nearest lone 5 or 7 (a 5-5-7 / 5-7-5 / 7-5-7 forms and is taken apart), else to the rim. Every kick is kept only if the lattice around it is also no less regular (rms edge strain + rms angle deviation from 60°). move lone 5s / 7s: a lone 5 (7) with less than 20° of curvature of its sign under it is walked one site at a time (trough on its peak, bump one edge along) towards the nearest spot that holds 40° of it — a 5 belongs on the crease, tip or dome, a 7 in the saddle or neck; a step is kept when the curvature under it went up with no new defect and no loss of regularity. pin: a kick that does not hold on its own — or undoes itself within 500 more steps — is kept applied after every batch of steps, held like a seed; Clear pins releases them.">i</button>
-      </div>
+      <summary><span class="chev"></span><h2>4 Formation</h2><span class="sum" id="sum-solve"></span></summary>
+      <div class="body locks">
       <div class="subhead">pattern parameters <button class="info" type="button" title="u_t = r u − (1 + Δ/q0²)² u + b u² − u³. r &lt; 0 keeps u = 0 stable, so the lattice grows only from the seed, as a front; b (the quadratic term) makes hexagons (spots) win and lets them live at more negative r. The map is measured on a flat domain with the solver's own scheme (edges by bisection, ±0.002 in r). Hatched: the seed dies (u = 0 wins). Grey: pinned — the patch survives but its front does not move: the lattice holds it, it would have to advance a whole row at once; the band is under 0.01 wide in r for b ≤ 1.1 and widens to 0.25 at b = 2. Blue: the front advances, in bands of lattice edges per 100 steps (key in the corner). Dots, r > 0: u = 0 is unstable, patterns nucleate everywhere, not only at the front. Read as a crystallisation diagram: seed dies = undersaturated; the pinned band = the solubility line, widened into a dead zone by pinning; front advances = metastable zone (grows only from a seed); r > 0 = labile zone (spontaneous nucleation, many grains). Drag the dot to set r and b; hover to read a point.">i</button></div>
       <canvas id="phase" class="pchart" width="372" height="190" aria-label="map of r and b: where the seed dies, is pinned, or grows; drag the dot to set r and b"></canvas>
       <div class="row slider"><label for="sl-r">r</label><input type="range" id="sl-r" min="-0.5" max="0.1" step="0.005" value="-0.08"><output id="out-r" class="mono">-0.080</output></div>
@@ -221,9 +218,64 @@
       </div>
     </details>
 
-    <!-- 5 Explain: not foldable, opens the equations page in a new tab (a running solve stays here) -->
+    <details class="sec" name="setup" id="sec-edit">
+      <summary><span class="chev"></span><h2>5 Edit lattice</h2><span class="sum" id="sum-edit"></span></summary>
+      <div class="body">
+      <!-- heal: connectivity, edited in the field (heal.js). Locked while a lattice is frozen -->
+      <div class="locks" id="heal-block">
+        <div class="row">
+          <button id="btn-heal" class="btn" type="button" title="heal in the field: the bound motifs (5-7-5, 7-5-7, 5-5-7, wrong diagonals), then the passes ticked">Heal pairs</button>
+          <label class="check" title="free 5–7 pairs are carried to an anti-pair, a lone 5 or 7, or the rim"><input type="checkbox" id="ck-heal-glide" checked> glide</label>
+          <label class="check" title="lone 5s and 7s are walked to the curvature of their sign (experimental)"><input type="checkbox" id="ck-heal-climb"> lone 5 · 7</label>
+          <label class="check" title="what will not hold is pinned in the field"><input type="checkbox" id="ck-heal-pin" checked> pin</label>
+        </div>
+        <div class="row buttons">
+          <span class="lead">one pass</span>
+          <button id="btn-heal-motifs" class="btn sm" type="button" title="the bound motifs alone">Motifs</button>
+          <button id="btn-heal-glide" class="btn sm" type="button" title="the free 5–7 pairs alone">Glide</button>
+          <button id="btn-heal-climb" class="btn sm" type="button" title="the lone 5s and 7s alone (experimental)">Move 5 · 7</button>
+          <button id="btn-pins-clear" class="btn sm" type="button" hidden>Clear pins</button>
+        </div>
+      </div>
+      <!-- freeze: the lattice taken out of the field (smooth.js); its positions and its connectivity (latedit.js) are edited there -->
+      <div class="row buttons">
+        <button id="btn-freeze" class="btn" type="button" disabled title="the lattice leaves the field: its sites go between the carrier vertices, and the solver waits for Unfreeze">Freeze lattice</button>
+        <button id="btn-export-frozen" class="btn" type="button" hidden title="the OBJ of the frozen lattice">Export</button>
+      </div>
+      <div id="smooth-block" hidden>
+        <div class="row slider">
+          <label for="sl-smooth" title="sweeps that move the sites on the surface until the laths run straight">smooth</label>
+          <input type="range" id="sl-smooth" min="0" max="100" step="1" value="20"><output id="out-smooth" class="mono">20</output>
+        </div>
+        <div class="row">
+          <label class="check" title="soft springs hold every edge at its length"><input type="checkbox" id="ck-smooth-len" checked> lengths</label>
+          <label class="check" title="the rim sites stay where they are"><input type="checkbox" id="ck-smooth-rim"> hold rim</label>
+          <label class="check" title="the 5s and 7s stay where they are"><input type="checkbox" id="ck-smooth-sing"> hold 5 · 7</label>
+        </div>
+        <div class="row" id="tool-row">
+          <span class="lead">click</span>
+          <div class="chips inline" id="tool-chips">
+            <button class="chip" type="button" data-tool="heal" title="click a 5 or a 7: its cluster goes down to its net charge (5-7-5 → 5); next to the rim it is taken out there">heal</button>
+            <button class="chip" type="button" data-tool="rim" title="click a 5 or a 7: it is walked to the nearest rim and taken out there — with a neighbour of the other kind as a 5–7 pair (flips glide it), alone by hops">to rim</button>
+            <button class="chip" type="button" data-tool="flip" title="click an edge: it turns to the other diagonal (its ends −1, the opposite sites +1)">flip</button>
+            <button class="chip" type="button" data-tool="collapse" title="click an edge: its two sites become one (the opposite sites −1). A naked edge too: the site behind it −1, a 7 there becomes a 6">collapse</button>
+            <button class="chip" type="button" data-tool="split" title="click an edge: a new site in its middle (the opposite sites +1). A naked edge too: the site behind it +1, a 5 there becomes a 6">split</button>
+            <button class="chip" type="button" data-tool="patch" title="click a rim site: its fan is completed to six triangles; a new site past the boundary lies on the surface continued">patch</button>
+          </div>
+        </div>
+        <div class="row buttons">
+          <button id="btn-heal-all" class="btn sm" type="button" title="every cluster of 5s and 7s that holds more than its net charge">Heal all</button>
+          <button id="btn-patch-rim" class="btn sm" type="button" title="the rim grown with regular sites until the lattice covers the surface: notches first, then rows (two per click); sites past the boundary lie on the surface continued">Patch rim</button>
+          <button id="btn-undo" class="btn sm" type="button" disabled title="take back the last edit">Undo</button>
+        </div>
+      </div>
+      <div class="readout" id="ro-frozen"></div>
+      </div>
+    </details>
+
+    <!-- 6 Explain: not foldable, opens the equations page in a new tab (a running solve stays here) -->
     <a class="sec-link" id="sec-explain" href="Tri-Weave-Lattice-Equations.html" target="_blank" rel="noopener" title="Tri-Weave Lattice Equations — opens in a new tab">
-      <span class="chev" aria-hidden="true"></span><h2>5 Explain</h2><span class="sum">how the solver works ↗</span>
+      <span class="chev" aria-hidden="true"></span><h2>6 Explain</h2><span class="sum">how the solver works ↗</span>
     </a>
     </div>
     </div>
@@ -234,7 +286,6 @@
       <div class="readout warn" id="ro-notes" hidden></div>
       <div class="readout" id="ro-disp">—</div>
       <svg id="dens-svg" class="diagram" viewBox="0 0 372 156" role="img" aria-label="lattice edge, strand pitch and carrier resolution at true ratio"></svg>
-      <div class="readout" id="ro-heal">—</div>
     </div>
     <div id="setup-resize" class="resizer" role="separator" aria-orientation="vertical" aria-label="resize the setup" tabindex="0" title="drag to resize the setup (double-click: default width)"></div>
   </aside>
@@ -262,14 +313,6 @@
       <button id="display-dock" class="nbtn" type="button" title="move the sidebar to the other side of the view">⇄</button>
     </div>
     <div class="body">
-      <div class="row">
-        <label>theme</label>
-        <div class="chips inline" id="theme-chips">
-          <button class="chip on" data-theme="auto">auto</button>
-          <button class="chip" data-theme="light">light</button>
-          <button class="chip" data-theme="dark">dark</button>
-        </div>
-      </div>
       <div class="chips" id="chips">
         <button class="chip on" data-layer="field">field</button>
         <button class="chip" data-layer="wire" hidden title="intrinsic Delaunay triangulation of the carrier">mesh</button>
